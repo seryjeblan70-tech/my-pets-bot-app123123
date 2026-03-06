@@ -1,906 +1,1294 @@
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 
+// -------------------- Telegram --------------------
 const tg = window.Telegram?.WebApp;
-const API_URL = 'http://mybatok.bothost.ru:8000'; // замени на свой адрес
 
-// Массив питомцев с условиями разблокировки
-const PETS = [
-  { id: 'dog', emoji: '🐶', name: 'Собачка', unlock: 'start' },
-  { id: 'cat', emoji: '🐱', name: 'Кошка', unlock: 'start' },
-  { id: 'rabbit', emoji: '🐰', name: 'Зайка', unlock: 'start' },
-  { id: 'fox', emoji: '🦊', name: 'Лиса', unlock: 'level', level: 5 },
-  { id: 'panda', emoji: '🐼', name: 'Панда', unlock: 'level', level: 10 },
-  { id: 'koala', emoji: '🐨', name: 'Коала', unlock: 'level', level: 15 },
-  { id: 'lion', emoji: '🦁', name: 'Лев', unlock: 'invite', invites: 3 },
-  { id: 'unicorn', emoji: '🦄', name: 'Единорог', unlock: 'event' },
+// -------------------- Types --------------------
+interface Pet {
+  id: string;
+  emoji: string;
+  name: string;
+  unlock: 'start' | 'level' | 'invite' | 'event';
+  level?: number;
+  invites?: number;
+  bonus?: { type: 'clickPower' | 'regen' | 'maxStamina'; value: number };
+  maxLevel?: number;
+  upgradeCost?: (level: number) => number;
+}
+
+interface InventoryItem {
+  id: string;
+  name: string;
+  description: string;
+  emoji: string;
+  quantity: number;
+  type: 'food' | 'boost' | 'skin';
+  effect?: { type: string; value: number; duration?: number };
+}
+
+interface Quest {
+  id: string;
+  title: string;
+  description: string;
+  target: number;
+  progress: number;
+  reward: number;
+  completed: boolean;
+  type: 'feed' | 'click' | 'play' | 'invite' | 'upgrade';
+}
+
+interface DailyBonus {
+  lastClaimDate: string;
+  streak: number;
+  claimedToday: boolean;
+}
+
+interface SpecialEvent {
+  active: boolean;
+  type: 'rarePet' | 'doubleRewards' | 'boss';
+  expiresAt: number;
+  data?: any;
+}
+
+// -------------------- Constants --------------------
+const MAX_FOOD = 100;
+const BASE_CLICK_POWER = 1;
+const COMBO_RESET_TIME = 2000; // 2 секунды
+const COMBO_FIRE_THRESHOLD = 100; // порог огненного режима
+
+const INITIAL_PET_LEVELS: Record<string, number> = { dog: 1, cat: 1, rabbit: 1 };
+
+const PETS: Pet[] = [
+  { id: 'dog', emoji: '🐶', name: 'Собачка', unlock: 'start', bonus: { type: 'clickPower', value: 0.1 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
+  { id: 'cat', emoji: '🐱', name: 'Кошка', unlock: 'start', bonus: { type: 'regen', value: 0.2 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
+  { id: 'rabbit', emoji: '🐰', name: 'Зайка', unlock: 'start', bonus: { type: 'maxStamina', value: 5 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
+  { id: 'fox', emoji: '🦊', name: 'Лиса', unlock: 'level', level: 5, bonus: { type: 'clickPower', value: 0.2 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
+  { id: 'panda', emoji: '🐼', name: 'Панда', unlock: 'level', level: 10, bonus: { type: 'regen', value: 0.3 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
+  { id: 'koala', emoji: '🐨', name: 'Коала', unlock: 'level', level: 15, bonus: { type: 'maxStamina', value: 10 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
+  { id: 'lion', emoji: '🦁', name: 'Лев', unlock: 'invite', invites: 3, bonus: { type: 'clickPower', value: 0.3 }, maxLevel: 5, upgradeCost: (lvl) => 40 + lvl * 20 },
+  { id: 'unicorn', emoji: '🦄', name: 'Единорог', unlock: 'event', bonus: { type: 'regen', value: 0.5 }, maxLevel: 5, upgradeCost: (lvl) => 50 + lvl * 25 },
 ];
 
+const INITIAL_QUESTS: Quest[] = [
+  { id: 'q1', title: 'Накорми питомца', description: 'Покорми питомца 3 раза', target: 3, progress: 0, reward: 30, completed: false, type: 'feed' },
+  { id: 'q2', title: 'Кликер', description: 'Сделай 100 кликов', target: 100, progress: 0, reward: 50, completed: false, type: 'click' },
+  { id: 'q3', title: 'Игрок', description: 'Поиграй с питомцем 2 раза', target: 2, progress: 0, reward: 40, completed: false, type: 'play' },
+  { id: 'q4', title: 'Пригласи друга', description: 'Пригласи 1 друга', target: 1, progress: 0, reward: 100, completed: false, type: 'invite' },
+  { id: 'q5', title: 'Улучшай!', description: 'Купи 1 улучшение в магазине', target: 1, progress: 0, reward: 60, completed: false, type: 'upgrade' },
+];
+
+const SHOP_ITEMS: InventoryItem[] = [
+  { id: 'lucky_ticket', name: 'Счастливый билет', description: 'Удваивает клики на 30 секунд', emoji: '🎫', quantity: 0, type: 'boost', effect: { type: 'doubleClick', value: 2, duration: 30 } },
+  { id: 'food_bag', name: 'Мешок еды', description: '+30 еды', emoji: '🍖', quantity: 0, type: 'food' },
+  { id: 'costume', name: 'Костюм супергероя', description: 'Изменяет внешность питомца на 1 час', emoji: '🦸', quantity: 0, type: 'skin' },
+];
+
+// -------------------- Custom Hooks --------------------
+
+function useLevel(totalClicks: number) {
+  const getThreshold = (lvl: number) => (lvl <= 8 ? 200 * lvl - 100 : 300 * lvl - 900);
+  let level = 1;
+  while (getThreshold(level) <= totalClicks) level++;
+  const prev = level === 1 ? 0 : getThreshold(level - 1);
+  const next = getThreshold(level);
+  const expInCurrent = totalClicks - prev;
+  const expNeeded = next - prev;
+  const percent = (expInCurrent / expNeeded) * 100;
+  return { level, expInCurrent, expNeeded, percent };
+}
+
+function useDailyBonus() {
+  const [daily, setDaily] = useState<DailyBonus>(() => {
+    const saved = localStorage.getItem('dailyBonus');
+    return saved ? JSON.parse(saved) : { lastClaimDate: '', streak: 0, claimedToday: false };
+  });
+
+  const claimDaily = useCallback((addGems: (amount: number) => void) => {
+    if (daily.claimedToday) return false;
+    const today = new Date().toISOString().split('T')[0];
+    let newStreak = daily.streak + 1;
+    if (daily.lastClaimDate) {
+      const last = new Date(daily.lastClaimDate);
+      const now = new Date();
+      const diffDays = Math.floor((now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays > 1) newStreak = 1;
+    }
+    const reward = 50 + newStreak * 10;
+    addGems(reward);
+    setDaily({ lastClaimDate: today, streak: newStreak, claimedToday: true });
+    localStorage.setItem('dailyBonus', JSON.stringify({ lastClaimDate: today, streak: newStreak, claimedToday: true }));
+    return true;
+  }, [daily]);
+
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (daily.lastClaimDate !== today && daily.claimedToday) {
+      setDaily(prev => ({ ...prev, claimedToday: false }));
+    }
+  }, [daily]);
+
+  return { daily, claimDaily };
+}
+
+function useQuests(initial: Quest[]) {
+  const [quests, setQuests] = useState<Quest[]>(() => {
+    const saved = localStorage.getItem('quests');
+    return saved ? JSON.parse(saved) : initial;
+  });
+
+  const updateProgress = useCallback((type: Quest['type'], increment = 1) => {
+    setQuests(prev => prev.map(q =>
+      q.type === type && !q.completed
+        ? { ...q, progress: Math.min(q.progress + increment, q.target) }
+        : q
+    ));
+  }, []);
+
+  const claimQuest = useCallback((questId: string, addGems: (amount: number) => void) => {
+    setQuests(prev => {
+      const quest = prev.find(q => q.id === questId);
+      if (!quest || quest.completed || quest.progress < quest.target) return prev;
+      addGems(quest.reward);
+      return prev.map(q => q.id === questId ? { ...q, completed: true } : q);
+    });
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      if (now.getHours() === 0 && now.getMinutes() === 0) {
+        setQuests(INITIAL_QUESTS.map(q => ({ ...q, progress: 0, completed: false })));
+      }
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem('quests', JSON.stringify(quests));
+  }, [quests]);
+
+  return { quests, updateProgress, claimQuest };
+}
+
+function useInventory() {
+  const [inventory, setInventory] = useState<InventoryItem[]>(() => {
+    const saved = localStorage.getItem('inventory');
+    return saved ? JSON.parse(saved) : SHOP_ITEMS.map(item => ({ ...item, quantity: 0 }));
+  });
+
+  const addItem = useCallback((itemId: string, quantity = 1) => {
+    setInventory(prev => prev.map(item =>
+      item.id === itemId ? { ...item, quantity: item.quantity + quantity } : item
+    ));
+  }, []);
+
+  const removeItem = useCallback((itemId: string, quantity = 1) => {
+    setInventory(prev => prev.map(item =>
+      item.id === itemId ? { ...item, quantity: Math.max(0, item.quantity - quantity) } : item
+    ));
+  }, []);
+
+  const useItem = useCallback((itemId: string, effects: (effect: any) => void) => {
+    const item = inventory.find(i => i.id === itemId);
+    if (!item || item.quantity <= 0) return false;
+    if (item.effect) effects(item.effect);
+    removeItem(itemId, 1);
+    return true;
+  }, [inventory, removeItem]);
+
+  useEffect(() => {
+    localStorage.setItem('inventory', JSON.stringify(inventory));
+  }, [inventory]);
+
+  return { inventory, addItem, removeItem, useItem };
+}
+
+function usePets(selectedPetId: string, setSelectedPetId: (id: string) => void, level: number, friendsCount: number, eventActive: boolean) {
+  const [petLevels, setPetLevels] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('petLevels');
+    return saved ? JSON.parse(saved) : INITIAL_PET_LEVELS;
+  });
+
+  const isPetUnlocked = useCallback((pet: Pet) => {
+    if (pet.unlock === 'start') return true;
+    if (pet.unlock === 'level') return level >= (pet.level ?? 0);
+    if (pet.unlock === 'invite') return friendsCount >= (pet.invites ?? 0);
+    if (pet.unlock === 'event') return eventActive;
+    return false;
+  }, [level, friendsCount, eventActive]);
+
+  const upgradePet = useCallback((petId: string, gems: number, setGems: (g: number) => void) => {
+    const pet = PETS.find(p => p.id === petId);
+    if (!pet) return false;
+    const currentLevel = petLevels[petId] || 1;
+    if (currentLevel >= (pet.maxLevel || 5)) return false;
+    const cost = pet.upgradeCost ? pet.upgradeCost(currentLevel) : 30;
+    if (gems < cost) return false;
+    setGems(gems - cost);
+    setPetLevels(prev => ({ ...prev, [petId]: currentLevel + 1 }));
+    return true;
+  }, [petLevels]);
+
+  const getCurrentPetBonus = useCallback(() => {
+    const pet = PETS.find(p => p.id === selectedPetId);
+    if (!pet || !pet.bonus) return 0;
+    const level = petLevels[pet.id] || 1;
+    return pet.bonus.value * level;
+  }, [selectedPetId, petLevels]);
+
+  useEffect(() => {
+    localStorage.setItem('petLevels', JSON.stringify(petLevels));
+  }, [petLevels]);
+
+  return { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus };
+}
+
+function useSpecialEvent() {
+  const [event, setEvent] = useState<SpecialEvent | null>(null);
+
+  const generateEvent = useCallback(() => {
+    if (event && event.expiresAt > Date.now()) return;
+    if (Math.random() < 0.2) {
+      const expiresAt = Date.now() + 60 * 60 * 1000;
+      const type = ['rarePet', 'doubleRewards', 'boss'][Math.floor(Math.random() * 3)] as any;
+      setEvent({ active: true, type, expiresAt, data: type === 'rarePet' ? { petId: 'unicorn' } : undefined });
+    }
+  }, [event]);
+
+  useEffect(() => {
+    const interval = setInterval(generateEvent, 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [generateEvent]);
+
+  return { specialEvent: event, setSpecialEvent: setEvent };
+}
+
+function useResources() {
+  const [food, setFood] = useState<number | null>(null);
+  const [gems, setGems] = useState<number | null>(null);
+  const [totalClicks, setTotalClicks] = useState<number>(0);
+  const [stamina, setStamina] = useState<number>(100);
+  const [maxStamina, setMaxStamina] = useState<number>(100);
+  const [staminaRegenRate, setStaminaRegenRate] = useState<number>(1);
+  const [clickPower, setClickPower] = useState<number>(BASE_CLICK_POWER);
+  const [clickUpgradeLevel, setClickUpgradeLevel] = useState<number>(0);
+  const [regenUpgradeLevel, setRegenUpgradeLevel] = useState<number>(0);
+  const [maxStaminaUpgradeLevel, setMaxStaminaUpgradeLevel] = useState<number>(0);
+
+  useEffect(() => {
+    const saved = localStorage.getItem('resources');
+    if (saved) {
+      const data = JSON.parse(saved);
+      setFood(data.food);
+      setGems(data.gems);
+      setTotalClicks(data.totalClicks);
+      setStamina(data.stamina);
+      setMaxStamina(data.maxStamina);
+      setStaminaRegenRate(data.staminaRegenRate);
+      setClickPower(data.clickPower);
+      setClickUpgradeLevel(data.clickUpgradeLevel);
+      setRegenUpgradeLevel(data.regenUpgradeLevel);
+      setMaxStaminaUpgradeLevel(data.maxStaminaUpgradeLevel);
+    } else {
+      setFood(50);
+      setGems(100);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (food !== null && gems !== null) {
+      localStorage.setItem('resources', JSON.stringify({
+        food, gems, totalClicks, stamina, maxStamina, staminaRegenRate, clickPower,
+        clickUpgradeLevel, regenUpgradeLevel, maxStaminaUpgradeLevel
+      }));
+    }
+  }, [food, gems, totalClicks, stamina, maxStamina, staminaRegenRate, clickPower,
+      clickUpgradeLevel, regenUpgradeLevel, maxStaminaUpgradeLevel]);
+
+  return {
+    food, setFood,
+    gems, setGems,
+    totalClicks, setTotalClicks,
+    stamina, setStamina,
+    maxStamina, setMaxStamina,
+    staminaRegenRate, setStaminaRegenRate,
+    clickPower, setClickPower,
+    clickUpgradeLevel, setClickUpgradeLevel,
+    regenUpgradeLevel, setRegenUpgradeLevel,
+    maxStaminaUpgradeLevel, setMaxStaminaUpgradeLevel,
+  };
+}
+
+// -------------------- Main App --------------------
 function App() {
-  const [user, setUser] = useState<any>(null);
+  const {
+    food, setFood,
+    gems, setGems,
+    totalClicks, setTotalClicks,
+    stamina, setStamina,
+    maxStamina, setMaxStamina,
+    staminaRegenRate, setStaminaRegenRate,
+    clickPower, setClickPower,
+    clickUpgradeLevel, setClickUpgradeLevel,
+    regenUpgradeLevel, setRegenUpgradeLevel,
+    maxStaminaUpgradeLevel, setMaxStaminaUpgradeLevel,
+  } = useResources();
+
+  const { level, expInCurrent, expNeeded, percent: expPercent } = useLevel(totalClicks);
+  const { daily, claimDaily } = useDailyBonus();
+  const { quests, updateProgress, claimQuest } = useQuests(INITIAL_QUESTS);
+  const { inventory, addItem, useItem } = useInventory();
+  const [friendsCount, setFriendsCount] = useState<number>(0);
+  const [eventActive, setEventActive] = useState(false);
+  const [eventTimeLeft, setEventTimeLeft] = useState('');
+  const { specialEvent, setSpecialEvent } = useSpecialEvent();
+
+  // Combo system
+  const [combo, setCombo] = useState(0);
+  const [maxCombo, setMaxCombo] = useState(0);
+  const comboTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const resetCombo = useCallback(() => {
+    setCombo(0);
+    if (comboTimeoutRef.current) {
+      clearTimeout(comboTimeoutRef.current);
+      comboTimeoutRef.current = null;
+    }
+  }, []);
+
+  const incrementCombo = useCallback(() => {
+    setCombo(prev => {
+      const newCombo = prev + 1;
+      if (newCombo > maxCombo) setMaxCombo(newCombo);
+      return newCombo;
+    });
+    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
+    comboTimeoutRef.current = setTimeout(resetCombo, COMBO_RESET_TIME);
+  }, [maxCombo, resetCombo]);
+
+  const isComboFire = combo >= COMBO_FIRE_THRESHOLD;
+
+  const [firstLoginDate, setFirstLoginDate] = useState<string>(() => {
+    const saved = localStorage.getItem('firstLoginDate');
+    if (saved) return saved;
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem('firstLoginDate', today);
+    return today;
+  });
+
+  const daysInGame = useMemo(() => {
+    const first = new Date(firstLoginDate);
+    const now = new Date();
+    const diffTime = now.getTime() - first.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    return diffDays + 1;
+  }, [firstLoginDate]);
+
+  const [userAvatar, setUserAvatar] = useState('');
+  const userId = tg?.initDataUnsafe?.user?.id || 'guest123';
+  const inviteLink = `https://t.me/ваш_бот?start=ref_${userId}`;
+
+  const [selectedPetId, setSelectedPetId] = useState<string>(() => localStorage.getItem('selectedPet') || 'dog');
+  const { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus } = usePets(selectedPetId, setSelectedPetId, level, friendsCount, eventActive);
+  const currentPet = PETS.find(p => p.id === selectedPetId) || PETS[0];
+
+  const totalClickPower = useMemo(() => {
+    const base = clickPower;
+    const bonus = getCurrentPetBonus();
+    if (currentPet.bonus?.type === 'clickPower') return base + bonus;
+    return base;
+  }, [clickPower, currentPet, getCurrentPetBonus]);
+
+  useEffect(() => {
+    if (currentPet.bonus?.type === 'regen') {
+      const bonus = getCurrentPetBonus();
+      setStaminaRegenRate(prev => prev + bonus);
+      return () => setStaminaRegenRate(prev => prev - bonus);
+    }
+  }, [currentPet, getCurrentPetBonus, setStaminaRegenRate]);
+
+  useEffect(() => {
+    if (currentPet.bonus?.type === 'maxStamina') {
+      const bonus = getCurrentPetBonus();
+      setMaxStamina(prev => prev + bonus);
+      setStamina(prev => prev + bonus);
+      return () => {
+        setMaxStamina(prev => prev - bonus);
+        setStamina(prev => Math.max(prev - bonus, 0));
+      };
+    }
+  }, [currentPet, getCurrentPetBonus, setMaxStamina, setStamina]);
+
   const [loading, setLoading] = useState(true);
   const [showShop, setShowShop] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [showInviteMenu, setShowInviteMenu] = useState(false);
+  const [showDailyBonus, setShowDailyBonus] = useState(false);
+  const [showQuests, setShowQuests] = useState(false);
+  const [showInventory, setShowInventory] = useState(false);
+  const [showTutorial, setShowTutorial] = useState(false);
   const [activeProfileTab, setActiveProfileTab] = useState<'profile' | 'leaders' | 'pets'>('profile');
+
   const [isClicking, setIsClicking] = useState(false);
   const [floaters, setFloaters] = useState<Array<{ id: number; value: number; x: number; y: number }>>([]);
   const petRef = useRef<HTMLDivElement>(null);
 
-  // Состояния профиля
   const [petName, setPetName] = useState<string>('Мой AI-питомец');
   const [isEditing, setIsEditing] = useState(false);
   const [tempName, setTempName] = useState(petName);
-  const [userAvatar, setUserAvatar] = useState<string>('');
 
-  // Состояние для лидеров
-  const [leaders, setLeaders] = useState<any[]>([]);
-  const [leadersLoading, setLeadersLoading] = useState(false);
+  const lastClickTime = useRef(0);
+  const playSound = useCallback((type: 'click' | 'feed' | 'buy') => {}, []);
 
-  // Ивент (по выходным)
-  const isEventActive = () => {
-    const day = new Date().getDay();
-    return day === 0 || day === 6;
-  };
-  const [eventActive, setEventActive] = useState(false);
-  const [eventTimeLeft, setEventTimeLeft] = useState('');
-
-  // Загрузка пользователя с сервера
-  const loadUser = async () => {
-    if (!tg) return;
-    const userData = tg.initDataUnsafe?.user;
-    if (!userData) return;
-
-    try {
-      const res = await fetch(`${API_URL}/user/${userData.id}`);
-      if (!res.ok) throw new Error('Failed to load user');
-      const data = await res.json();
-      setUser(data);
-      setUserAvatar(userData.first_name?.charAt(0).toUpperCase() || '?');
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
+  const closeAllModals = () => {
+    setShowProfileMenu(false);
+    setShowInviteMenu(false);
+    setShowDailyBonus(false);
+    setShowQuests(false);
+    setShowInventory(false);
+    setShowShop(false);
   };
 
-  // Загрузка лидеров
-  const loadLeaders = async () => {
-    setLeadersLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/leaders`);
-      if (!res.ok) throw new Error('Failed to load leaders');
-      const data = await res.json();
-      setLeaders(data);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLeadersLoading(false);
-    }
+  const handleOpenProfile = () => {
+    closeAllModals();
+    setShowProfileMenu(true);
   };
 
-  // Обновление пользователя на сервере
-  const updateUser = async (updates: any) => {
-    if (!user) return;
-    try {
-      await fetch(`${API_URL}/user/${user.user_id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates),
-      });
-      setUser((prev: any) => ({ ...prev, ...updates }));
-    } catch (e) {
-      console.error(e);
-    }
+  const handleOpenInvite = () => {
+    closeAllModals();
+    setShowInviteMenu(true);
   };
 
   useEffect(() => {
     if (tg) {
       tg.ready();
       tg.expand();
-      loadUser();
+      const user = tg.initDataUnsafe?.user;
+      if (user) setUserAvatar(user.first_name?.charAt(0).toUpperCase() || '?');
+    }
+    setTimeout(() => setLoading(false), 500);
+    if (!localStorage.getItem('tutorialCompleted')) {
+      setShowTutorial(true);
     }
   }, []);
 
   useEffect(() => {
-    setEventActive(isEventActive());
-    if (isEventActive()) {
-      const now = new Date();
+    const day = new Date().getDay();
+    const active = day === 0 || day === 6;
+    setEventActive(active);
+    if (active) {
       const end = new Date();
       end.setDate(end.getDate() + (7 - end.getDay()));
       end.setHours(23, 59, 59, 999);
-      const diff = end.getTime() - now.getTime();
-      const hours = Math.floor(diff / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      setEventTimeLeft(`${hours}ч ${minutes}м`);
+      const diff = end.getTime() - Date.now();
+      setEventTimeLeft(`${Math.floor(diff / (1000 * 60 * 60))}ч ${Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60))}м`);
     }
   }, []);
 
-  // При переключении на вкладку лидеров загружаем данные
-  useEffect(() => {
-    if (activeProfileTab === 'leaders') {
-      loadLeaders();
-    }
-  }, [activeProfileTab]);
-
-  // Трата голода: -15 в час
   useEffect(() => {
     const interval = setInterval(() => {
-      setUser((prev: any) => {
-        if (!prev) return prev;
-        const newFood = Math.max(prev.food - 15, 0);
-        updateUser({ food: newFood });
-        return { ...prev, food: newFood };
-      });
+      setFood(prev => Math.max((prev ?? 0) - 15, 0));
     }, 60 * 60 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [setFood]);
 
-  // Восстановление стамины
   useEffect(() => {
     const interval = setInterval(() => {
-      setUser((prev: any) => {
-        if (!prev) return prev;
-        const newStamina = Math.min(prev.stamina + prev.stamina_regen_rate, prev.max_stamina);
-        updateUser({ stamina: newStamina });
-        return { ...prev, stamina: newStamina };
-      });
+      setStamina(prev => Math.min(prev + staminaRegenRate, maxStamina));
     }, 2000);
     return () => clearInterval(interval);
-  }, []);
+  }, [staminaRegenRate, maxStamina, setStamina]);
 
-  // Удаление floaters
   useEffect(() => {
     if (floaters.length === 0) return;
     const timer = setTimeout(() => setFloaters([]), 1000);
     return () => clearTimeout(timer);
   }, [floaters]);
 
-  // Порог опыта для уровня L
-  const getThreshold = (lvl: number) => {
-    if (lvl <= 8) {
-      return 200 * lvl - 100;
-    } else {
-      return 300 * lvl - 900;
-    }
-  };
-
-  let level = 1;
-  while (user && getThreshold(level) <= user.total_clicks) {
-    level++;
-  }
-  const prevThreshold = level === 1 ? 0 : getThreshold(level - 1);
-  const nextThreshold = getThreshold(level);
-  const expInCurrentLevel = user ? user.total_clicks - prevThreshold : 0;
-  const expNeeded = nextThreshold - prevThreshold;
-  const expPercent = user ? (expInCurrentLevel / expNeeded) * 100 : 0;
-
-  // Функция проверки разблокировки питомца
-  const isPetUnlocked = (pet: typeof PETS[0]) => {
-    if (!user) return false;
-    if (pet.unlock === 'start') return true;
-    if (pet.unlock === 'level') return level >= (pet.level ?? 0);
-    if (pet.unlock === 'invite') return user.friends_count >= (pet.invites ?? 0);
-    if (pet.unlock === 'event') return eventActive;
-    return false;
-  };
-
-  const currentPet = PETS.find(p => p.id === (user?.selected_pet || 'dog')) || PETS[0];
-  const currentPetEmoji = currentPet.emoji;
-
   const sendAction = (action: string, payload: any = {}) => {
     if (tg) tg.sendData(JSON.stringify({ action, ...payload }));
   };
 
-  const handleClick = async () => {
-    if (!user) return;
-    if (user.stamina < 1) {
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const now = Date.now();
+    if (now - lastClickTime.current < 100) return;
+    lastClickTime.current = now;
+
+    if (gems === null) return;
+    if (stamina < 1) {
       alert('Нет сил! Подожди, энергия восстановится.');
       return;
     }
 
+    incrementCombo();
+
     setIsClicking(true);
-    setTimeout(() => setIsClicking(false), 100);
+    setTimeout(() => setIsClicking(false), 300);
 
-    const reward = eventActive ? user.click_power * 2 : user.click_power;
-    const newGems = user.gems + reward;
-    const newStamina = user.stamina - 1;
-    const newTotalClicks = user.total_clicks + 1;
+    let gain = totalClickPower;
+    if (specialEvent?.active && specialEvent.type === 'doubleRewards') gain *= 2;
 
-    setUser((prev: any) => ({
-      ...prev,
-      gems: newGems,
-      stamina: newStamina,
-      total_clicks: newTotalClicks,
-    }));
-
-    await updateUser({
-      gems: newGems,
-      stamina: newStamina,
-      total_clicks: newTotalClicks,
-    });
+    setGems(g => g! + gain);
+    setStamina(prev => Math.max(prev - 1, 0));
+    setTotalClicks(prev => prev + 1);
+    updateProgress('click', gain);
 
     if (petRef.current) {
       const rect = petRef.current.getBoundingClientRect();
       const x = Math.random() * rect.width * 0.8 + rect.width * 0.1;
       const y = Math.random() * rect.height * 0.5 + rect.height * 0.2;
-      setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: reward, x, y }]);
+      setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: gain, x, y }]);
     }
 
-    sendAction('click', { power: user.click_power });
+    playSound('click');
+    sendAction('click', { power: gain });
   };
 
-  const handleFeed = async () => {
-    if (!user) return;
-    if (user.food <= 0) {
-      alert('Нет еды! Купи в магазине.');
-      return;
-    }
-    const newFood = user.food - 1;
-    const newStamina = Math.min(user.stamina + 10, user.max_stamina);
-
-    setUser((prev: any) => ({ ...prev, food: newFood, stamina: newStamina }));
-    await updateUser({ food: newFood, stamina: newStamina });
+  const handleFeed = () => {
+    if (food === null) return alert('Данные о еде загружаются');
+    if (food <= 0) return alert('Нет еды! Купи в магазине.');
+    setFood(prev => Math.max((prev ?? 0) - 1, 0));
+    setStamina(prev => Math.min(prev + 10, maxStamina));
+    updateProgress('feed', 1);
+    playSound('feed');
     alert('Питомец накормлен! +10 энергии');
     sendAction('feed');
   };
 
-  const handlePlay = async () => {
-    if (!user) return;
-    if (user.stamina < 20) {
-      alert('Недостаточно энергии для игры!');
-      return;
-    }
-    const reward = eventActive ? 60 : 30;
-    const newStamina = user.stamina - 20;
-    const newGems = user.gems + reward;
-
-    setUser((prev: any) => ({ ...prev, stamina: newStamina, gems: newGems }));
-    await updateUser({ stamina: newStamina, gems: newGems });
+  const handlePlay = () => {
+    if (stamina < 20) return alert('Недостаточно энергии для игры!');
+    setStamina(prev => prev - 20);
+    let reward = 30;
+    if (specialEvent?.active && specialEvent.type === 'doubleRewards') reward *= 2;
+    setGems(prev => (prev ?? 0) + reward);
+    updateProgress('play', 1);
     alert(`Поиграли! +${reward} алмазов`);
     sendAction('play');
   };
 
-  // ==================== ПРИГЛАШЕНИЕ ДРУЗЕЙ ====================
-  const userId = tg?.initDataUnsafe?.user?.id || 'guest123';
-  const inviteLink = `https://t.me/ваш_бот?start=ref_${userId}`;
-
   const copyInviteLink = () => {
     navigator.clipboard.writeText(inviteLink);
     alert('✅ Ссылка скопирована!');
+    setFriendsCount(prev => prev + 1);
+    updateProgress('invite', 1);
+    setGems(prev => (prev ?? 0) + 50);
   };
 
-  const handleInviteFriend = () => {
-    setShowInviteMenu(true);
+  const buyItem = (item: InventoryItem, price: number) => {
+    if (gems === null) return;
+    if (gems < price) return alert('Не хватает алмазов!');
+    setGems(prev => prev! - price);
+    addItem(item.id, 1);
+    updateProgress('upgrade', 1);
+    playSound('buy');
+    sendAction('buyItem', { itemId: item.id, price });
   };
 
-  // ==================== РЕДАКТИРОВАНИЕ ИМЕНИ ====================
-  const handleNameClick = () => {
-    setIsEditing(true);
-    setTempName(petName);
-  };
-
-  const handleNameSave = () => {
-    if (tempName.trim()) {
-      setPetName(tempName);
-    }
-    setIsEditing(false);
-  };
-
-  const handleNameCancel = () => {
-    setIsEditing(false);
-  };
-
-  // ==================== МАГАЗИН ====================
-  const buyFood = async (amount: number, price: number) => {
-    if (!user) return;
-    if (user.gems < price) {
-      alert('Не хватает 💎 Алмазов!');
-      return;
-    }
-    const newGems = user.gems - price;
-    const newFood = Math.min(user.food + amount, 100);
-    setUser((prev: any) => ({ ...prev, gems: newGems, food: newFood }));
-    await updateUser({ gems: newGems, food: newFood });
-    alert(`Куплено ${amount} еды`);
-    sendAction('buyFood', { amount, price });
-  };
-
-  const buyClickUpgrade = async () => {
-    if (!user) return;
-    const cost = getClickUpgradeCost(user.click_upgrade_level);
-    if (user.gems < cost) {
-      alert('Не хватает 💎 Алмазов!');
-      return;
-    }
-    const newGems = user.gems - cost;
-    const newClickPower = user.click_power + 0.2;
-    const newLevel = user.click_upgrade_level + 1;
-    setUser((prev: any) => ({
-      ...prev,
-      gems: newGems,
-      click_power: newClickPower,
-      click_upgrade_level: newLevel,
-    }));
-    await updateUser({
-      gems: newGems,
-      click_power: newClickPower,
-      click_upgrade_level: newLevel,
+  const handleUseItem = (item: InventoryItem) => {
+    useItem(item.id, (effect) => {
+      if (effect.type === 'doubleClick') {
+        setClickPower(prev => prev * 2);
+        setTimeout(() => setClickPower(prev => prev / 2), effect.duration * 1000);
+        alert(`Бустер активирован на ${effect.duration} сек!`);
+      } else if (item.type === 'food') {
+        setFood(prev => Math.min((prev ?? 0) + 30, MAX_FOOD));
+      } else if (item.type === 'skin') {
+        alert('Скин надет!');
+      }
     });
-    alert(`⚡ Сила клика увеличена до ${newClickPower.toFixed(1)}`);
-    sendAction('buyClickUpgrade', { newPower: newClickPower });
   };
 
-  const getClickUpgradeCost = (level: number) => 10 + level * 5;
-
-  const buyRegenUpgrade = async () => {
-    if (!user) return;
-    const cost = getRegenUpgradeCost(user.regen_upgrade_level);
-    if (user.gems < cost) {
-      alert('Не хватает 💎 Алмазов!');
-      return;
-    }
-    const newGems = user.gems - cost;
-    const newRegen = user.stamina_regen_rate + 0.5;
-    const newLevel = user.regen_upgrade_level + 1;
-    setUser((prev: any) => ({
-      ...prev,
-      gems: newGems,
-      stamina_regen_rate: newRegen,
-      regen_upgrade_level: newLevel,
-    }));
-    await updateUser({
-      gems: newGems,
-      stamina_regen_rate: newRegen,
-      regen_upgrade_level: newLevel,
-    });
-    alert(`⚡ Скорость регенерации увеличена до ${newRegen.toFixed(1)}/сек`);
-    sendAction('buyRegenUpgrade', { newRate: newRegen });
-  };
-
-  const getRegenUpgradeCost = (level: number) => 15 + level * 8;
-
-  const buyMaxStaminaUpgrade = async () => {
-    if (!user) return;
-    const cost = getMaxStaminaUpgradeCost(user.max_stamina_upgrade_level);
-    if (user.gems < cost) {
-      alert('Не хватает 💎 Алмазов!');
-      return;
-    }
-    const newGems = user.gems - cost;
-    const newMaxStamina = user.max_stamina + 20;
-    const newStamina = user.stamina + 20;
-    const newLevel = user.max_stamina_upgrade_level + 1;
-    setUser((prev: any) => ({
-      ...prev,
-      gems: newGems,
-      max_stamina: newMaxStamina,
-      stamina: newStamina,
-      max_stamina_upgrade_level: newLevel,
-    }));
-    await updateUser({
-      gems: newGems,
-      max_stamina: newMaxStamina,
-      stamina: newStamina,
-      max_stamina_upgrade_level: newLevel,
-    });
-    alert(`📈 Макс. энергия увеличена до ${newMaxStamina}`);
-    sendAction('buyMaxStaminaUpgrade', { newMax: newMaxStamina });
-  };
-
-  const getMaxStaminaUpgradeCost = (level: number) => 30 + level * 10;
-
-  if (loading || !user) {
-    return (
-      <div style={styles.loadingContainer}>
-        <p>Загружаем питомца...</p>
-      </div>
-    );
+  if (loading) {
+    return <div style={styles.loadingContainer}>Загружаем питомца...</div>;
   }
-
-  const staminaPercent = (user.stamina / user.max_stamina) * 100;
 
   return (
     <div style={styles.container}>
-      {/* Баннер ивента */}
-      {eventActive && (
+      {specialEvent?.active && (
         <div style={styles.eventBanner}>
-          ✨ Ивент: редкие питомцы доступны! Осталось {eventTimeLeft} ✨
+          {specialEvent.type === 'rarePet' && '✨ Редкий питомец временно доступен! ✨'}
+          {specialEvent.type === 'doubleRewards' && '✨ Удвоенные награды! ✨'}
+          {specialEvent.type === 'boss' && '✨ Босс! Атакуй! ✨'}
+          <span> До окончания: {Math.ceil((specialEvent.expiresAt - Date.now()) / 60000)} мин</span>
         </div>
       )}
 
-      {/* Шапка с профилем и именем */}
-      <div style={styles.header}>
-        <div style={styles.profile}>
-          <div style={styles.avatar} onClick={() => setShowProfileMenu(true)}>
-            {userAvatar}
-          </div>
-          <div style={styles.friendsBadge} onClick={handleInviteFriend}>
-            👥 {user.friends_count}
-          </div>
-        </div>
+      <Header
+        userAvatar={userAvatar}
+        friendsCount={friendsCount}
+        onAvatarClick={handleOpenProfile}
+        onInviteClick={handleOpenInvite}
+        petName={petName}
+        isEditing={isEditing}
+        tempName={tempName}
+        setTempName={setTempName}
+        onNameClick={() => setIsEditing(true)}
+        onNameSave={() => { if (tempName.trim()) setPetName(tempName); setIsEditing(false); }}
+        onNameCancel={() => setIsEditing(false)}
+      />
 
-        {isEditing ? (
-          <div style={styles.nameEditor}>
-            <input
-              type="text"
-              value={tempName}
-              onChange={(e) => setTempName(e.target.value)}
-              style={styles.nameInput}
-              autoFocus
-            />
-            <button onClick={handleNameSave} style={styles.nameSaveBtn}>✅</button>
-            <button onClick={handleNameCancel} style={styles.nameCancelBtn}>❌</button>
-          </div>
-        ) : (
-          <div style={styles.nameDisplay} onClick={handleNameClick}>
-            <span style={styles.petName}>{petName}</span>
-            <span style={styles.editIcon}>✏️</span>
-          </div>
-        )}
-      </div>
+      <StatsBars
+        food={food ?? 0}
+        maxFood={MAX_FOOD}
+        level={level}
+        expInCurrent={expInCurrent}
+        expNeeded={expNeeded}
+        expPercent={expPercent}
+        stamina={stamina}
+        maxStamina={maxStamina}
+        staminaRegenRate={staminaRegenRate}
+        gems={gems ?? 0}
+        clickPower={totalClickPower}
+      />
 
-      {/* Основной контент */}
-      <div style={styles.content}>
-        {/* Четыре карточки */}
-        <div style={styles.stats}>
-          <div style={styles.statCard}>
-            <span style={styles.statValue}>{level}</span>
-            <span style={styles.statLabel}>📈 Уровень</span>
-          </div>
-          <div style={styles.statCard}>
-            <span style={styles.statValue}>{user.food}</span>
-            <span style={styles.statLabel}>🍖 Еда</span>
-          </div>
-          <div style={styles.statCard}>
-            <span style={styles.statValue}>{user.gems?.toFixed(1)}</span>
-            <span style={styles.statLabel}>💎 Алмазы</span>
-          </div>
-          <div style={styles.statCard}>
-            <span style={styles.statValue}>{user.click_power.toFixed(1)}</span>
-            <span style={styles.statLabel}>💥 Сила клика</span>
-          </div>
-        </div>
+      <Pet
+        ref={petRef}
+        emoji={currentPet.emoji}
+        isClicking={isClicking}
+        onClick={handleClick}
+        floaters={floaters}
+        combo={combo}
+        isComboFire={isComboFire}
+      />
 
-        {/* Полоска голода */}
-        <div style={styles.barWrapper}>
-          <div style={styles.barLabel}>🦴 Голод</div>
-          <div style={styles.barBg}>
-            <div style={{ ...styles.barFill, width: `${(user.food / 100) * 100}%`, background: '#ff9216' }} />
-            <span style={styles.barText}>{user.food}/100</span>
-          </div>
-        </div>
+      <ActionButtons
+        onFeed={handleFeed}
+        onPlay={handlePlay}
+        onShop={() => { closeAllModals(); setShowShop(true); }}
+        onDaily={() => { closeAllModals(); setShowDailyBonus(true); }}
+        onQuests={() => { closeAllModals(); setShowQuests(true); }}
+        onInventory={() => { closeAllModals(); setShowInventory(true); }}
+      />
 
-        {/* Полоска опыта */}
-        <div style={styles.barWrapper}>
-          <div style={styles.barLabel}>📈 Опыт до след. уровня</div>
-          <div style={styles.barBg}>
-            <div style={{ ...styles.barFill, width: `${expPercent}%`, background: '#0285ff' }} />
-            <span style={styles.barText}>{expInCurrentLevel}/{expNeeded}</span>
-          </div>
-        </div>
-
-        {/* Питомец */}
-        <div ref={petRef} style={styles.petCircle} onClick={handleClick}>
-          <div style={{
-            fontSize: '150px',
-            transform: isClicking ? 'scale(0.9)' : 'scale(1)',
-            transition: 'transform 0.1s',
-          }}>
-            {currentPetEmoji}
-          </div>
-          {floaters.map(f => (
-            <div
-              key={f.id}
-              style={{
-                position: 'absolute',
-                left: f.x,
-                top: f.y,
-                color: '#ffd700',
-                fontWeight: 'bold',
-                fontSize: '20px',
-                pointerEvents: 'none',
-                animation: 'floatUp 1s ease-out forwards',
-              }}
-            >
-              +{f.value.toFixed(1)}
-            </div>
-          ))}
-        </div>
-
-        {/* Полоска энергии */}
-        <div style={styles.staminaWrapper}>
-          <div style={styles.staminaLabel}>⚡ Энергия (+{user.stamina_regen_rate.toFixed(1)}/сек)</div>
-          <div style={styles.staminaBarContainer}>
-            <div style={{ ...styles.staminaBarFill, width: `${staminaPercent}%` }} />
-            <span style={styles.staminaBarText}>{user.stamina}/{user.max_stamina}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Кнопки действий */}
-      <div style={styles.buttonsContainer}>
-        <div style={styles.actionsRow}>
-          <button style={{ ...styles.button, ...styles.feedButton }} onClick={handleFeed}>
-            🍖 Покормить
-          </button>
-          <button style={{ ...styles.button, ...styles.playButton }} onClick={handlePlay}>
-            🎾 Поиграть
-          </button>
-        </div>
-        <button style={{ ...styles.button, ...styles.shopButton, width: '100%' }} onClick={() => setShowShop(true)}>
-          🛒 Магазин
-        </button>
-      </div>
-
-      {/* Модальное окно профиля с вкладками */}
-      {showProfileMenu && (
-        <div style={styles.modalOverlay} onClick={() => setShowProfileMenu(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Мой профиль</h3>
-              <button style={styles.closeButton} onClick={() => setShowProfileMenu(false)}>✕</button>
-            </div>
-            <div style={styles.tabs}>
-              <button
-                style={{ ...styles.tabButton, ...(activeProfileTab === 'profile' ? styles.activeTab : {}) }}
-                onClick={() => setActiveProfileTab('profile')}
-              >
-                Профиль
-              </button>
-              <button
-                style={{ ...styles.tabButton, ...(activeProfileTab === 'leaders' ? styles.activeTab : {}) }}
-                onClick={() => setActiveProfileTab('leaders')}
-              >
-                Лидеры
-              </button>
-              <button
-                style={{ ...styles.tabButton, ...(activeProfileTab === 'pets' ? styles.activeTab : {}) }}
-                onClick={() => setActiveProfileTab('pets')}
-              >
-                Питомцы
-              </button>
-            </div>
-            <div style={styles.modalBody}>
-              {activeProfileTab === 'profile' ? (
-                <>
-                  <div style={styles.profileInfo}>
-                    <div style={styles.profileAvatar}>{userAvatar}</div>
-                    <div style={styles.profileDetails}>
-                      <div><strong>Имя:</strong> {tg?.initDataUnsafe?.user?.first_name || 'Неизвестно'}</div>
-                      <div><strong>Username:</strong> @{tg?.initDataUnsafe?.user?.username || 'не указан'}</div>
-                      <div><strong>ID:</strong> {tg?.initDataUnsafe?.user?.id || '—'}</div>
-                    </div>
-                  </div>
-                  <div style={styles.statsGrid}>
-                    <div style={styles.statBox}>
-                      <span style={styles.statBoxValue}>{user.friends_count}</span>
-                      <span style={styles.statBoxLabel}>👥 Друзей</span>
-                    </div>
-                    <div style={styles.statBox}>
-                      <span style={styles.statBoxValue}>{user.total_clicks}</span>
-                      <span style={styles.statBoxLabel}>🖱️ Кликов</span>
-                    </div>
-                    <div style={styles.statBox}>
-                      <span style={styles.statBoxValue}>{level}</span>
-                      <span style={styles.statBoxLabel}>📈 Уровень</span>
-                    </div>
-                    <div style={styles.statBox}>
-                      <span style={styles.statBoxValue}>{user.gems?.toFixed(1)}</span>
-                      <span style={styles.statBoxLabel}>💎 Алмазы</span>
-                    </div>
-                  </div>
-                  <div style={styles.referralSection}>
-                    <button onClick={handleInviteFriend} style={styles.referralButton}>
-                      👥 Пригласить друга
-                    </button>
-                  </div>
-                </>
-              ) : activeProfileTab === 'leaders' ? (
-                <div style={styles.leadersList}>
-                  <h4 style={styles.sectionTitle}>🏆 Топ 10 игроков</h4>
-                  {leadersLoading ? (
-                    <p style={styles.loadingText}>Загрузка...</p>
-                  ) : leaders.length === 0 ? (
-                    <p style={styles.loadingText}>Пока нет данных</p>
-                  ) : (
-                    leaders.map((player, index) => (
-                      <div key={player.user_id} style={styles.leaderItem}>
-                        <span style={styles.leaderPosition}>{index + 1}</span>
-                        <span style={styles.leaderName}>{player.name}</span>
-                        <span style={styles.leaderScore}>{player.gems.toLocaleString()} 💎</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              ) : (
-                <div style={styles.petsList}>
-                  <h4 style={styles.sectionTitle}>🐾 Мои питомцы</h4>
-                  {PETS.map(pet => {
-                    const unlocked = isPetUnlocked(pet);
-                    const isSelected = user.selected_pet === pet.id;
-                    return (
-                      <div
-                        key={pet.id}
-                        style={{
-                          ...styles.petItem,
-                          ...(isSelected ? styles.petItemSelected : {}),
-                          ...(!unlocked ? styles.petItemLocked : {}),
-                        }}
-                        onClick={async () => {
-                          if (!unlocked) return;
-                          setUser((prev: any) => ({ ...prev, selected_pet: pet.id }));
-                          await updateUser({ selected_pet: pet.id });
-                        }}
-                      >
-                        <div style={styles.petItemEmoji}>{pet.emoji}</div>
-                        <div style={styles.petItemInfo}>
-                          <div style={styles.petItemName}>{pet.name}</div>
-                          {!unlocked && (
-                            <div style={styles.petItemCondition}>
-                              🔒 {pet.unlock === 'level' && `нужен ${pet.level} уровень`}
-                              {pet.unlock === 'invite' && `нужно ${pet.invites} друга`}
-                              {pet.unlock === 'event' && 'доступен во время ивента'}
-                            </div>
-                          )}
-                        </div>
-                        {unlocked && isSelected && <div style={styles.petItemSelectedMark}>✓</div>}
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
+      {showDailyBonus && (
+        <DailyBonusModal
+          daily={daily}
+          onClaim={() => claimDaily((amt) => setGems(g => (g ?? 0) + amt))}
+          onClose={() => setShowDailyBonus(false)}
+        />
       )}
 
-      {/* Модальное окно приглашения */}
-      {showInviteMenu && (
-        <div style={styles.modalOverlay} onClick={() => setShowInviteMenu(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>👥 Пригласить друга</h3>
-              <button style={styles.closeButton} onClick={() => setShowInviteMenu(false)}>✕</button>
-            </div>
-            <div style={styles.modalBody}>
-              <p style={styles.referralText}>
-                Поделись ссылкой с другом. За каждого приглашённого ты получишь <strong>50 💎</strong>!
-              </p>
-              <div style={styles.inviteLinkContainer}>
-                <input
-                  type="text"
-                  value={inviteLink}
-                  readOnly
-                  style={styles.inviteLinkInput}
-                />
-                <button onClick={copyInviteLink} style={styles.copyButton}>📋</button>
-              </div>
-            </div>
-          </div>
-        </div>
+      {showQuests && (
+        <QuestsModal
+          quests={quests}
+          onClaim={(id) => claimQuest(id, (amt) => setGems(g => (g ?? 0) + amt))}
+          onClose={() => setShowQuests(false)}
+        />
       )}
 
-      {/* Модальное окно магазина */}
+      {showInventory && (
+        <InventoryModal
+          inventory={inventory}
+          onUse={handleUseItem}
+          onClose={() => setShowInventory(false)}
+        />
+      )}
+
       {showShop && (
-        <div style={styles.modalOverlay} onClick={() => setShowShop(false)}>
-          <div style={styles.modalContent} onClick={(e) => e.stopPropagation()}>
-            <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>💎 Магазин</h3>
-              <button style={styles.closeButton} onClick={() => setShowShop(false)}>✕</button>
-            </div>
-            <div style={styles.modalBody}>
-              <div style={styles.shopSection}>
-                <h4 style={styles.shopSectionTitle}>🍖 Еда</h4>
-                <div style={styles.shopItem} onClick={() => buyFood(5, 20)}>
-                  <span>🍖 5 еды</span>
-                  <span>20 💎</span>
-                </div>
-                <div style={styles.shopItem} onClick={() => buyFood(10, 35)}>
-                  <span>🍖 10 еды</span>
-                  <span>35 💎</span>
-                </div>
-                <div style={styles.shopItem} onClick={() => buyFood(25, 80)}>
-                  <span>🍖 25 еды</span>
-                  <span>80 💎</span>
-                </div>
-              </div>
-              <div style={styles.shopSection}>
-                <h4 style={styles.shopSectionTitle}>⚡ Сила клика</h4>
-                <div style={styles.shopItem} onClick={buyClickUpgrade}>
-                  <span>⚡ Улучшить клик (сейчас {user.click_power.toFixed(1)} → {(user.click_power+0.2).toFixed(1)})</span>
-                  <span>{getClickUpgradeCost(user.click_upgrade_level)} 💎</span>
-                </div>
-              </div>
-              <div style={styles.shopSection}>
-                <h4 style={styles.shopSectionTitle}>💪 Энергия</h4>
-                <div style={styles.shopItem} onClick={buyRegenUpgrade}>
-                  <span>⚡ Скорость регенерации (сейчас +{user.stamina_regen_rate.toFixed(1)}/сек → +{(user.stamina_regen_rate+0.5).toFixed(1)}/сек)</span>
-                  <span>{getRegenUpgradeCost(user.regen_upgrade_level)} 💎</span>
-                </div>
-                <div style={styles.shopItem} onClick={buyMaxStaminaUpgrade}>
-                  <span>📈 Макс. энергия (сейчас {user.max_stamina} → {user.max_stamina+20})</span>
-                  <span>{getMaxStaminaUpgradeCost(user.max_stamina_upgrade_level)} 💎</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ShopModal
+          gems={gems ?? 0}
+          clickUpgradeLevel={clickUpgradeLevel}
+          regenUpgradeLevel={regenUpgradeLevel}
+          maxStaminaUpgradeLevel={maxStaminaUpgradeLevel}
+          clickPower={totalClickPower}
+          staminaRegenRate={staminaRegenRate}
+          maxStamina={maxStamina}
+          onBuyClickUpgrade={() => {
+            const cost = 10 + clickUpgradeLevel * 5;
+            if (gems! < cost) return alert('Не хватает алмазов');
+            setGems(g => g! - cost);
+            setClickUpgradeLevel(l => l + 1);
+            setClickPower(p => p + 0.2);
+            updateProgress('upgrade', 1);
+          }}
+          onBuyRegenUpgrade={() => {
+            const cost = 15 + regenUpgradeLevel * 8;
+            if (gems! < cost) return alert('Не хватает алмазов');
+            setGems(g => g! - cost);
+            setRegenUpgradeLevel(l => l + 1);
+            setStaminaRegenRate(r => r + 0.5);
+            updateProgress('upgrade', 1);
+          }}
+          onBuyMaxStaminaUpgrade={() => {
+            const cost = 30 + maxStaminaUpgradeLevel * 10;
+            if (gems! < cost) return alert('Не хватает алмазов');
+            setGems(g => g! - cost);
+            setMaxStaminaUpgradeLevel(l => l + 1);
+            setMaxStamina(prev => prev + 20);
+            setStamina(prev => prev + 20);
+            updateProgress('upgrade', 1);
+          }}
+          onBuyItem={buyItem}
+          shopItems={SHOP_ITEMS}
+          onClose={() => setShowShop(false)}
+        />
+      )}
+
+      {showInviteMenu && (
+        <InviteModal
+          inviteLink={inviteLink}
+          onCopy={copyInviteLink}
+          onClose={() => {
+            setShowInviteMenu(false);
+            setShowProfileMenu(true);
+          }}
+        />
+      )}
+
+      {showProfileMenu && (
+        <ProfileModal
+          activeTab={activeProfileTab}
+          setActiveTab={setActiveProfileTab}
+          userAvatar={userAvatar}
+          user={tg?.initDataUnsafe?.user}
+          friendsCount={friendsCount}
+          totalClicks={totalClicks}
+          level={level}
+          gems={gems ?? 0}
+          daysInGame={daysInGame}
+          onInvite={handleOpenInvite}
+          leaders={[]}
+          pets={PETS}
+          isPetUnlocked={isPetUnlocked}
+          selectedPetId={selectedPetId}
+          onSelectPet={(id) => { setSelectedPetId(id); localStorage.setItem('selectedPet', id); }}
+          petLevels={petLevels}
+          onUpgradePet={(petId) => upgradePet(petId, gems!, (newGems) => setGems(newGems))}
+          onClose={() => setShowProfileMenu(false)}
+        />
+      )}
+
+      {showTutorial && (
+        <Tutorial
+          onComplete={() => {
+            setShowTutorial(false);
+            localStorage.setItem('tutorialCompleted', 'true');
+          }}
+        />
       )}
     </div>
   );
 }
 
+// -------------------- Component Definitions --------------------
+
+interface HeaderProps {
+  userAvatar: string;
+  friendsCount: number;
+  onAvatarClick: () => void;
+  onInviteClick: () => void;
+  petName: string;
+  isEditing: boolean;
+  tempName: string;
+  setTempName: (name: string) => void;
+  onNameClick: () => void;
+  onNameSave: () => void;
+  onNameCancel: () => void;
+}
+
+const Header: React.FC<HeaderProps> = ({
+  userAvatar, friendsCount, onAvatarClick, onInviteClick,
+  petName, isEditing, tempName, setTempName, onNameClick, onNameSave, onNameCancel
+}) => (
+  <div style={styles.header}>
+    <div style={styles.profile}>
+      <div style={styles.avatar} onClick={onAvatarClick}>{userAvatar}</div>
+      <div style={styles.friendsBadge} onClick={onInviteClick}>👥 {friendsCount}</div>
+    </div>
+    {isEditing ? (
+      <div style={styles.nameEditor}>
+        <input type="text" value={tempName} onChange={e => setTempName(e.target.value)} style={styles.nameInput} autoFocus />
+        <button onClick={onNameSave} style={styles.nameSaveBtn}>✅</button>
+        <button onClick={onNameCancel} style={styles.nameCancelBtn}>❌</button>
+      </div>
+    ) : (
+      <div style={styles.nameDisplay} onClick={onNameClick}>
+        <span style={styles.petName}>{petName}</span>
+        <span style={styles.editIcon}>✏️</span>
+      </div>
+    )}
+  </div>
+);
+
+interface StatsBarsProps {
+  food: number;
+  maxFood: number;
+  level: number;
+  expInCurrent: number;
+  expNeeded: number;
+  expPercent: number;
+  stamina: number;
+  maxStamina: number;
+  staminaRegenRate: number;
+  gems: number;
+  clickPower: number;
+}
+
+const StatsBars: React.FC<StatsBarsProps> = ({
+  food, maxFood, level, expInCurrent, expNeeded, expPercent,
+  stamina, maxStamina, staminaRegenRate, gems, clickPower
+}) => (
+  <div style={styles.content}>
+    <div style={styles.stats}>
+      <div style={styles.statCard}>
+        <span style={styles.statValue}>{level}</span>
+        <span style={styles.statLabel}>📈 Уровень</span>
+      </div>
+      <div style={styles.statCard}>
+        <span style={styles.statValue}>{food}</span>
+        <span style={styles.statLabel}>🍖 Еда</span>
+      </div>
+      <div style={styles.statCard}>
+        <span style={styles.statValue}>{gems.toFixed(1)}</span>
+        <span style={styles.statLabel}>💎 Алмазы</span>
+      </div>
+      <div style={styles.statCard}>
+        <span style={styles.statValue}>{clickPower.toFixed(1)}</span>
+        <span style={styles.statLabel}>💥 Сила клика</span>
+      </div>
+    </div>
+    <div style={styles.barWrapper}>
+      <div style={styles.barLabel}>🦴 Голод</div>
+      <div style={styles.barBg}>
+        <div style={{ ...styles.barFill, width: `${(food / maxFood) * 100}%`, background: '#ff9216' }} />
+        <span style={styles.barText}>{food}/{maxFood}</span>
+      </div>
+    </div>
+    <div style={styles.barWrapper}>
+      <div style={styles.barLabel}>📈 Опыт до след. уровня</div>
+      <div style={styles.barBg}>
+        <div style={{ ...styles.barFill, width: `${expPercent}%`, background: '#0285ff' }} />
+        <span style={styles.barText}>{expInCurrent}/{expNeeded}</span>
+      </div>
+    </div>
+    <div style={styles.staminaWrapper}>
+      <div style={styles.staminaLabel}>⚡ Энергия (+{staminaRegenRate.toFixed(1)}/сек)</div>
+      <div style={styles.staminaBarContainer}>
+        <div style={{ ...styles.staminaBarFill, width: `${(stamina / maxStamina) * 100}%` }} />
+        <span style={styles.staminaBarText}>{stamina}/{maxStamina}</span>
+      </div>
+    </div>
+  </div>
+);
+
+interface PetProps {
+  emoji: string;
+  isClicking: boolean;
+  onClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  floaters: Array<{ id: number; value: number; x: number; y: number }>;
+  combo: number;
+  isComboFire: boolean;
+}
+
+const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onClick, floaters, combo, isComboFire }, ref) => (
+  <div style={styles.petContainer}>
+    <div
+      ref={ref}
+      style={{
+        ...styles.petCircle,
+        animation: isClicking ? 'pulse 0.3s ease-out' : 'none',
+        transform: isClicking ? 'scale(1.05)' : 'scale(1)',
+        transition: 'transform 0.2s, box-shadow 0.3s',
+        boxShadow: isComboFire ? '0 0 50px #ff4500, 0 0 100px #ff8c00' : '0 0 20px rgba(255,204,0,0.2)',
+      }}
+      onClick={onClick}
+    >
+      <div style={{ fontSize: '150px' }}>
+        {emoji}
+      </div>
+      {isComboFire && (
+        <>
+          <div style={styles.fireLeft} />
+          <div style={styles.fireRight} />
+          <div style={styles.fireTop} />
+        </>
+      )}
+      {floaters.map((f) => (
+        <div key={f.id} style={{ position: 'absolute', left: f.x, top: f.y, color: '#ffd700', fontWeight: 'bold', fontSize: '20px', pointerEvents: 'none', animation: 'floatUp 1s ease-out forwards' }}>
+          +{f.value.toFixed(1)}
+        </div>
+      ))}
+      {isClicking && <div style={styles.clickFlash} />}
+    </div>
+    <div style={styles.comboCounter}>
+      {combo > 0 && (
+        <span style={{ 
+          ...styles.comboText, 
+          color: isComboFire ? '#ff4500' : '#ffcc00',
+          animation: isComboFire ? 'flicker 0.5s infinite alternate' : 'none'
+        }}>
+          🔥 {combo}
+        </span>
+      )}
+    </div>
+  </div>
+));
+
+interface ActionButtonsProps {
+  onFeed: () => void;
+  onPlay: () => void;
+  onShop: () => void;
+  onDaily: () => void;
+  onQuests: () => void;
+  onInventory: () => void;
+}
+
+const ActionButtons: React.FC<ActionButtonsProps> = ({ onFeed, onPlay, onShop, onDaily, onQuests, onInventory }) => (
+  <div style={styles.buttonsContainer}>
+    <div style={styles.actionsRow}>
+      <button style={{ ...styles.button, ...styles.feedButton }} onClick={onFeed}>🍖 Покормить</button>
+      <button style={{ ...styles.button, ...styles.playButton }} onClick={onPlay}>🎾 Поиграть</button>
+      <button style={{ ...styles.button, ...styles.shopButton }} onClick={onDaily}>🎁 Бонус</button>
+    </div>
+    <div style={styles.actionsRow}>
+      <button style={{ ...styles.button, ...styles.shopButton }} onClick={onQuests}>📋 Задания</button>
+      <button style={{ ...styles.button, ...styles.shopButton }} onClick={onInventory}>🎒 Инвентарь</button>
+      <button style={{ ...styles.button, ...styles.shopButton }} onClick={onShop}>🛒 Магазин</button>
+    </div>
+  </div>
+);
+
+interface DailyBonusModalProps {
+  daily: DailyBonus;
+  onClaim: () => void;
+  onClose: () => void;
+}
+
+const DailyBonusModal: React.FC<DailyBonusModalProps> = ({ daily, onClaim, onClose }) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}><h3>🎁 Ежедневный бонус</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      <div>Текущая серия: {daily.streak} дней</div>
+      {!daily.claimedToday ? (
+        <button onClick={() => { onClaim(); onClose(); }} style={styles.referralButton}>Забрать {50 + daily.streak * 10} 💎</button>
+      ) : (
+        <p>Уже забрали сегодня. Приходите завтра!</p>
+      )}
+    </div>
+  </div>
+);
+
+interface QuestsModalProps {
+  quests: Quest[];
+  onClaim: (id: string) => void;
+  onClose: () => void;
+}
+
+const QuestsModal: React.FC<QuestsModalProps> = ({ quests, onClaim, onClose }) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}><h3>📋 Задания</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      {quests.map((q) => (
+        <div key={q.id} style={styles.questItem}>
+          <div><strong>{q.title}</strong> ({q.progress}/{q.target})</div>
+          <div>{q.description}</div>
+          {!q.completed && q.progress >= q.target ? (
+            <button onClick={() => onClaim(q.id)} style={styles.referralButton}>Забрать {q.reward} 💎</button>
+          ) : q.completed ? <span>✅ Выполнено</span> : <progress value={q.progress} max={q.target} />}
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+interface InventoryModalProps {
+  inventory: InventoryItem[];
+  onUse: (item: InventoryItem) => void;
+  onClose: () => void;
+}
+
+const InventoryModal: React.FC<InventoryModalProps> = ({ inventory, onUse, onClose }) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}><h3>🎒 Инвентарь</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      {inventory.map((item) => item.quantity > 0 && (
+        <div key={item.id} style={styles.shopItem}>
+          <span>{item.emoji} {item.name} x{item.quantity}</span>
+          <button onClick={() => onUse(item)} style={styles.referralButton}>Использовать</button>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+interface ShopModalProps {
+  gems: number;
+  clickUpgradeLevel: number;
+  regenUpgradeLevel: number;
+  maxStaminaUpgradeLevel: number;
+  clickPower: number;
+  staminaRegenRate: number;
+  maxStamina: number;
+  onBuyClickUpgrade: () => void;
+  onBuyRegenUpgrade: () => void;
+  onBuyMaxStaminaUpgrade: () => void;
+  onBuyItem: (item: InventoryItem, price: number) => void;
+  shopItems: InventoryItem[];
+  onClose: () => void;
+}
+
+const ShopModal: React.FC<ShopModalProps> = ({
+  gems, clickUpgradeLevel, regenUpgradeLevel, maxStaminaUpgradeLevel,
+  clickPower, staminaRegenRate, maxStamina,
+  onBuyClickUpgrade, onBuyRegenUpgrade, onBuyMaxStaminaUpgrade,
+  onBuyItem, shopItems, onClose
+}) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}><h3>🛒 Магазин</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      <div>У вас 💎 {gems.toFixed(1)}</div>
+      <div style={styles.shopSection}>
+        <h4>⚡ Сила клика</h4>
+        <div style={styles.shopItem} onClick={onBuyClickUpgrade}>
+          <span>Улучшить клик (сейчас {clickPower.toFixed(1)} → {(clickPower+0.2).toFixed(1)})</span>
+          <span>{10 + clickUpgradeLevel * 5} 💎</span>
+        </div>
+      </div>
+      <div style={styles.shopSection}>
+        <h4>💪 Энергия</h4>
+        <div style={styles.shopItem} onClick={onBuyRegenUpgrade}>
+          <span>Скорость регенерации (сейчас +{staminaRegenRate.toFixed(1)} → +{(staminaRegenRate+0.5).toFixed(1)})</span>
+          <span>{15 + regenUpgradeLevel * 8} 💎</span>
+        </div>
+        <div style={styles.shopItem} onClick={onBuyMaxStaminaUpgrade}>
+          <span>Макс. энергия (сейчас {maxStamina} → {maxStamina+20})</span>
+          <span>{30 + maxStaminaUpgradeLevel * 10} 💎</span>
+        </div>
+      </div>
+      <div style={styles.shopSection}>
+        <h4>🎁 Предметы</h4>
+        {shopItems.map((item) => {
+          let price = 50;
+          if (item.id === 'food_bag') price = 40;
+          if (item.id === 'costume') price = 100;
+          return (
+            <div key={item.id} style={styles.shopItem} onClick={() => onBuyItem(item, price)}>
+              <span>{item.emoji} {item.name} - {item.description}</span>
+              <span>{price} 💎</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  </div>
+);
+
+interface InviteModalProps {
+  inviteLink: string;
+  onCopy: () => void;
+  onClose: () => void;
+}
+
+const InviteModal: React.FC<InviteModalProps> = ({ inviteLink, onCopy, onClose }) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}><h3>👥 Пригласить друга</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
+      <p>За каждого друга ты получишь 50 💎 после его первого клика.</p>
+      <div style={styles.inviteLinkContainer}>
+        <input type="text" value={inviteLink} readOnly style={styles.inviteLinkInput} />
+        <button onClick={onCopy} style={styles.copyButton}>📋</button>
+      </div>
+    </div>
+  </div>
+);
+
+interface ProfileModalProps {
+  activeTab: 'profile' | 'leaders' | 'pets';
+  setActiveTab: (tab: 'profile' | 'leaders' | 'pets') => void;
+  userAvatar: string;
+  user?: any;
+  friendsCount: number;
+  totalClicks: number;
+  level: number;
+  gems: number;
+  daysInGame: number;
+  onInvite: () => void;
+  leaders: any[];
+  pets: Pet[];
+  isPetUnlocked: (pet: Pet) => boolean;
+  selectedPetId: string;
+  onSelectPet: (id: string) => void;
+  petLevels: Record<string, number>;
+  onUpgradePet: (petId: string) => void;
+  onClose: () => void;
+}
+
+const ProfileModal: React.FC<ProfileModalProps> = ({
+  activeTab, setActiveTab, userAvatar, user, friendsCount, totalClicks, level, gems,
+  daysInGame, onInvite, leaders, pets, isPetUnlocked, selectedPetId, onSelectPet, petLevels, onUpgradePet, onClose
+}) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}>
+        <h3 style={styles.modalTitle}>Мой профиль</h3>
+        <button style={styles.closeButton} onClick={onClose}>✕</button>
+      </div>
+
+      <div style={styles.tabs}>
+        <button style={{ ...styles.tabButton, ...(activeTab === 'profile' ? styles.activeTab : {}) }} onClick={() => setActiveTab('profile')}>Профиль</button>
+        <button style={{ ...styles.tabButton, ...(activeTab === 'leaders' ? styles.activeTab : {}) }} onClick={() => setActiveTab('leaders')}>Лидеры</button>
+        <button style={{ ...styles.tabButton, ...(activeTab === 'pets' ? styles.activeTab : {}) }} onClick={() => setActiveTab('pets')}>Питомцы</button>
+      </div>
+
+      {activeTab === 'profile' && (
+        <div style={styles.profileContent}>
+          <div style={styles.profileHeader}>
+            <div style={styles.profileAvatarLarge}>{userAvatar}</div>
+            <div style={styles.profileNames}>
+              <div style={styles.profileName}>{user?.first_name || 'Игрок'}</div>
+              <div style={styles.profileUsername}>@{user?.username || 'username'}</div>
+              <div style={styles.profileDays}>📅 В игре {daysInGame} дн.</div>
+            </div>
+          </div>
+
+          <div style={styles.statsGrid}>
+            <div style={styles.statBox}>
+              <span style={styles.statBoxValue}>{friendsCount}</span>
+              <span style={styles.statBoxLabel}>Друзья</span>
+            </div>
+            <div style={styles.statBox}>
+              <span style={styles.statBoxValue}>{totalClicks}</span>
+              <span style={styles.statBoxLabel}>Клики</span>
+            </div>
+            <div style={styles.statBox}>
+              <span style={styles.statBoxValue}>{level}</span>
+              <span style={styles.statBoxLabel}>Уровень</span>
+            </div>
+            <div style={styles.statBox}>
+              <span style={styles.statBoxValue}>{gems}</span>
+              <span style={styles.statBoxLabel}>Алмазы</span>
+            </div>
+          </div>
+
+          <button onClick={onInvite} style={styles.inviteButton}>
+            👥 Пригласить друга
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'leaders' && (
+        <div style={styles.leadersPlaceholder}>Таблица лидеров (скоро)</div>
+      )}
+
+      {activeTab === 'pets' && (
+        <div style={styles.petsList}>
+          {pets.map((pet) => {
+            const unlocked = isPetUnlocked(pet);
+            const isSelected = selectedPetId === pet.id;
+            const level = petLevels[pet.id] || 1;
+            return (
+              <div
+                key={pet.id}
+                style={{ ...styles.petItem, ...(isSelected ? styles.petItemSelected : {}), ...(!unlocked ? styles.petItemLocked : {}) }}
+                onClick={() => unlocked && onSelectPet(pet.id)}
+              >
+                <span style={styles.petItemEmoji}>{pet.emoji}</span>
+                <div style={styles.petItemInfo}>
+                  <div style={styles.petItemName}>{pet.name} (ур. {level}/{pet.maxLevel || 5})</div>
+                  {!unlocked && (
+                    <div style={styles.petItemCondition}>
+                      🔒 {pet.unlock === 'level' && `нужен ${pet.level} уровень`}
+                      {pet.unlock === 'invite' && `нужно ${pet.invites} друзей`}
+                      {pet.unlock === 'event' && 'доступен во время ивента'}
+                    </div>
+                  )}
+                </div>
+                {unlocked && isSelected && <span style={styles.petItemSelectedMark}>✓</span>}
+                {unlocked && level < (pet.maxLevel || 5) && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onUpgradePet(pet.id); }}
+                    style={styles.upgradeButton}
+                  >
+                    ⬆️ {pet.upgradeCost ? pet.upgradeCost(level) : 30}
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  </div>
+);
+
+interface TutorialProps {
+  onComplete: () => void;
+}
+
+const Tutorial: React.FC<TutorialProps> = ({ onComplete }) => {
+  const [step, setStep] = useState(0);
+  const steps = [
+    'Кликай на питомца, чтобы зарабатывать алмазы!',
+    'Корми питомца, чтобы восстановить энергию.',
+    'Играй с питомцем, чтобы получить больше алмазов.',
+    'Заходи в магазин, чтобы улучшать характеристики.',
+    'Приглашай друзей и получай бонусы!',
+  ];
+  return (
+    <div style={styles.modalOverlay}>
+      <div style={styles.tutorialBox}>
+        <h3>Обучение</h3>
+        <p>{steps[step]}</p>
+        {step < steps.length - 1 ? (
+          <button onClick={() => setStep(step + 1)} style={styles.referralButton}>Далее</button>
+        ) : (
+          <button onClick={onComplete} style={styles.referralButton}>Завершить</button>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// -------------------- Styles --------------------
 const styles = {
-  container: {
-    minHeight: '100vh',
-    background: '#000',
-    color: '#fff',
-    padding: '20px',
-    fontFamily: 'sans-serif',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    boxSizing: 'border-box' as const,
+  container: { 
+    minHeight: '100vh', 
+    background: '#000', 
+    color: '#fff', 
+    padding: '12px', 
+    fontFamily: 'sans-serif', 
+    display: 'flex', 
+    flexDirection: 'column' as const, 
+    boxSizing: 'border-box' as const, 
     position: 'relative' as const,
-  },
-  loadingContainer: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: '100vh',
-    background: '#000',
-    color: '#fff',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '20px',
-  },
-  profile: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-  },
-  avatar: {
-    width: '40px',
-    height: '40px',
-    borderRadius: '50%',
-    background: '#444',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '18px',
-    fontWeight: 'bold',
-    border: '2px solid #666',
-    cursor: 'pointer',
-  },
-  friendsBadge: {
-    background: '#222',
-    borderRadius: '20px',
-    padding: '4px 10px',
-    fontSize: '14px',
-    cursor: 'pointer',
-    border: '1px solid #444',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-  },
-  nameDisplay: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    cursor: 'pointer',
-  },
-  petName: {
-    fontSize: '20px',
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  editIcon: {
-    fontSize: '16px',
-    opacity: 0.7,
-  },
-  nameEditor: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-  },
-  nameInput: {
-    background: '#222',
-    border: '1px solid #444',
-    borderRadius: '6px',
-    padding: '6px 10px',
-    color: '#fff',
-    fontSize: '16px',
-    outline: 'none',
-  },
-  nameSaveBtn: {
-    background: 'none',
-    border: 'none',
-    fontSize: '18px',
-    cursor: 'pointer',
-  },
-  nameCancelBtn: {
-    background: 'none',
-    border: 'none',
-    fontSize: '18px',
-    cursor: 'pointer',
-  },
-  content: {
-    flex: 0,
     overflowY: 'auto' as const,
-    marginBottom: '10px',
   },
-  title: {
-    fontSize: '28px',
-    fontWeight: 'bold',
-    textAlign: 'center' as const,
-    marginBottom: '20px',
-    color: '#fff',
-  },
-  stats: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: '8px',
-    marginTop: '20px',
-    marginBottom: '20px',
-  },
+  loadingContainer: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#000', color: '#fff' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' },
+  profile: { display: 'flex', alignItems: 'center', gap: '6px' },
+  avatar: { width: '36px', height: '36px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', border: '2px solid #666', cursor: 'pointer' },
+  friendsBadge: { background: '#222', borderRadius: '20px', padding: '4px 8px', fontSize: '13px', cursor: 'pointer', border: '1px solid #444', display: 'flex', alignItems: 'center', gap: '4px' },
+  nameDisplay: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' },
+  petName: { fontSize: '18px', fontWeight: 'bold', color: '#fff' },
+  editIcon: { fontSize: '14px', opacity: 0.7 },
+  nameEditor: { display: 'flex', alignItems: 'center', gap: '4px' },
+  nameInput: { background: '#222', border: '1px solid #444', borderRadius: '6px', padding: '4px 8px', color: '#fff', fontSize: '14px', outline: 'none' },
+  nameSaveBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
+  nameCancelBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
+  content: { flex: 1, overflowY: 'visible' as const, marginBottom: '8px' },
+  stats: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginTop: '12px', marginBottom: '12px' },
   statCard: {
     background: '#222',
     borderRadius: '10px',
-    padding: '12px',
+    padding: '8px 4px',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
     border: '1px solid #444',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
   },
-  statValue: {
-    fontSize: '18px',
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  statLabel: {
-    fontSize: '12px',
-    color: '#aaa',
-    marginTop: '4px',
-  },
-  barWrapper: {
-    marginBottom: '12px',
-  },
-  barLabel: {
-    fontSize: '16px',
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: '3px',
-  },
-  barBg: {
-    background: '#222',
-    height: '25px',
-    borderRadius: '10px',
-    position: 'relative' as const,
-    overflow: 'hidden',
-  },
-  barFill: {
-    height: '100%',
-    borderRadius: '10px',
-    transition: 'width 0.3s ease',
-  },
-  barText: {
-    position: 'absolute' as const,
-    top: 0,
-    left: 0,
-    width: '100%',
-    textAlign: 'center' as const,
-    lineHeight: '25px',
-    fontSize: '14px',
-    color: '#000',
-    fontWeight: 'bold',
-  },
+  statValue: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00' },
+  statLabel: { fontSize: '10px', color: '#aaa', marginTop: '2px' },
+  barWrapper: { marginBottom: '8px' },
+  barLabel: { fontSize: '14px', fontWeight: 'bold', color: '#fff', marginBottom: '2px' },
+  barBg: { background: '#222', height: '20px', borderRadius: '8px', position: 'relative' as const, overflow: 'hidden' },
+  barFill: { height: '100%', borderRadius: '8px', transition: 'width 0.3s ease' },
+  barText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '20px', fontSize: '12px', color: '#000', fontWeight: 'bold' },
+  petContainer: { position: 'relative' as const, margin: '20px auto 150px', width: 'fit-content' }, // поднято выше
   petCircle: {
     position: 'relative' as const,
     width: '250px',
     height: '230px',
-    margin: '60px auto 30px',
     background: '#222',
     borderRadius: '50%',
     display: 'flex',
@@ -909,330 +1297,155 @@ const styles = {
     cursor: 'pointer',
     border: '3px solid #444',
     overflow: 'hidden',
+    transition: 'box-shadow 0.3s',
   },
-  staminaWrapper: {
-    marginTop: '40px',
-    marginBottom: '10px',
-  },
-  staminaLabel: {
-    fontSize: '16px',
-    fontWeight: 'bold',
-    color: '#fff',
-    marginBottom: '4px',
-    textAlign: 'center' as const,
-  },
-  staminaBarContainer: {
-    background: '#222',
-    height: '25px',
-    borderRadius: '12px',
-    position: 'relative' as const,
-    overflow: 'hidden',
-    border: '1px solid #444',
-  },
-  staminaBarFill: {
-    background: '#ffcc00',
-    height: '100%',
-    borderRadius: '12px',
-    transition: 'width 0.3s ease',
-  },
-  staminaBarText: {
+  clickFlash: {
     position: 'absolute' as const,
     top: 0,
     left: 0,
     width: '100%',
-    textAlign: 'center' as const,
-    lineHeight: '25px',
-    fontSize: '14px',
-    color: '#000',
+    height: '100%',
+    borderRadius: '50%',
+    background: 'radial-gradient(circle, rgba(255,204,0,0.6) 0%, rgba(255,204,0,0) 70%)',
+    animation: 'fadeOut 0.3s ease-out forwards',
+    pointerEvents: 'none' as const,
+  },
+  fireLeft: {
+    position: 'absolute' as const,
+    bottom: '-10px',
+    left: '-10px',
+    width: '50px',
+    height: '50px',
+    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
+    borderRadius: '50%',
+    filter: 'blur(6px)',
+    animation: 'flicker 0.5s infinite alternate',
+    pointerEvents: 'none' as const,
+  },
+  fireRight: {
+    position: 'absolute' as const,
+    bottom: '-10px',
+    right: '-10px',
+    width: '50px',
+    height: '50px',
+    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
+    borderRadius: '50%',
+    filter: 'blur(6px)',
+    animation: 'flicker 0.5s infinite alternate',
+    pointerEvents: 'none' as const,
+  },
+  fireTop: {
+    position: 'absolute' as const,
+    top: '-15px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    width: '70px',
+    height: '70px',
+    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
+    borderRadius: '50%',
+    filter: 'blur(8px)',
+    animation: 'flicker 0.5s infinite alternate',
+    pointerEvents: 'none' as const,
+  },
+  comboCounter: {
+    position: 'absolute' as const,
+    top: '-30px',
+    left: '20px', // смещение влево
+    fontSize: '20px',
     fontWeight: 'bold',
+    textShadow: '0 0 8px currentColor',
+    whiteSpace: 'nowrap' as const,
   },
-  buttonsContainer: {
-    marginTop: '30px',
-  },
-  actionsRow: {
-    display: 'flex',
-    gap: '10px',
-    marginBottom: '10px',
-  },
-  button: {
-    flex: 1,
-    padding: '12px',
-    border: 'none',
-    borderRadius: '8px',
-    fontSize: '16px',
+  comboText: {
+    fontSize: '28px',
     fontWeight: 'bold',
-    cursor: 'pointer',
-    transition: 'opacity 0.2s',
-    touchAction: 'manipulation',
+    transition: 'color 0.3s',
   },
+  staminaWrapper: { marginTop: '20px', marginBottom: '8px' },
+  staminaLabel: { fontSize: '14px', fontWeight: 'bold', color: '#fff', marginBottom: '4px', textAlign: 'center' as const },
+  staminaBarContainer: { background: '#222', height: '20px', borderRadius: '10px', position: 'relative' as const, overflow: 'hidden', border: '1px solid #444' },
+  staminaBarFill: { background: '#ffcc00', height: '100%', borderRadius: '10px', transition: 'width 0.3s ease' },
+  staminaBarText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '20px', fontSize: '12px', color: '#000', fontWeight: 'bold' },
+  buttonsContainer: { marginTop: '15px' },
+  actionsRow: { display: 'flex', gap: '8px', marginBottom: '8px' },
+  button: { flex: 1, padding: '10px', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'opacity 0.2s, transform 0.1s', touchAction: 'manipulation' },
   feedButton: { background: '#666', color: '#fff' },
   playButton: { background: '#666', color: '#fff' },
   shopButton: { background: '#666', color: '#fff' },
-  modalOverlay: {
-    position: 'fixed' as const,
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-  },
-  modalContent: {
-    background: '#111',
-    borderRadius: '20px',
-    width: '90%',
-    maxWidth: '400px',
-    padding: '20px',
-    border: '1px solid #333',
-    boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
-  },
-  modalHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '15px',
-  },
-  modalTitle: {
-    fontSize: '20px',
-    fontWeight: 'bold',
-    color: '#fff',
-    margin: 0,
-  },
-  closeButton: {
-    background: 'none',
-    border: 'none',
-    color: '#aaa',
-    fontSize: '24px',
-    cursor: 'pointer',
-  },
-  modalBody: {
-    maxHeight: '400px',
-    overflowY: 'auto' as const,
-  },
-  tabs: {
-    display: 'flex',
-    marginBottom: '15px',
-    borderBottom: '1px solid #444',
-  },
-  tabButton: {
-    flex: 1,
-    background: 'none',
-    border: 'none',
-    color: '#fff',
-    padding: '10px',
-    cursor: 'pointer',
-    fontSize: '16px',
-    borderBottom: '2px solid transparent',
-  },
-  activeTab: {
-    borderBottom: '2px solid #ffcc00',
-    color: '#ffcc00',
-  },
-  profileInfo: {
-    display: 'flex',
-    gap: '15px',
-    marginBottom: '20px',
-  },
-  profileAvatar: {
-    width: '60px',
-    height: '60px',
-    borderRadius: '50%',
-    background: '#444',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    fontSize: '30px',
-    fontWeight: 'bold',
-    border: '2px solid #666',
-  },
-  profileDetails: {
-    flex: 1,
-    fontSize: '14px',
-    color: '#fff',
-  },
-  statsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(2, 1fr)',
-    gap: '10px',
-    marginBottom: '20px',
-  },
-  statBox: {
-    background: '#222',
-    borderRadius: '8px',
-    padding: '12px',
-    display: 'flex',
-    flexDirection: 'column' as const,
-    alignItems: 'center',
-    border: '1px solid #444',
-  },
-  statBoxValue: {
-    fontSize: '20px',
-    fontWeight: 'bold',
-    color: '#ffcc00',
-  },
-  statBoxLabel: {
-    fontSize: '12px',
-    color: '#aaa',
-    marginTop: '4px',
-  },
-  referralSection: {
-    marginTop: '10px',
-  },
-  referralButton: {
-    background: '#666',
-    color: '#fff',
-    border: 'none',
-    borderRadius: '6px',
-    padding: '10px',
-    fontSize: '14px',
-    cursor: 'pointer',
-    width: '100%',
-  },
-  leadersList: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '8px',
-  },
-  sectionTitle: {
-    fontSize: '16px',
-    fontWeight: 'bold',
-    color: '#ffcc00',
-    marginBottom: '8px',
-  },
-  leaderItem: {
-    display: 'flex',
-    alignItems: 'center',
-    background: '#222',
-    borderRadius: '6px',
-    padding: '8px 12px',
-    border: '1px solid #444',
-  },
-  leaderPosition: {
-    width: '30px',
-    fontWeight: 'bold',
-    color: '#ffcc00',
-  },
-  leaderName: {
-    flex: 1,
-    marginLeft: '10px',
-  },
-  leaderScore: {
-    color: '#ffcc00',
-    fontWeight: 'bold',
-  },
-  eventBanner: {
-    background: '#ffcc00',
-    color: '#000',
-    padding: '10px',
-    textAlign: 'center' as const,
-    borderRadius: '8px',
-    marginBottom: '10px',
-    fontWeight: 'bold',
-  },
-  loadingText: {
-    textAlign: 'center' as const,
-    color: '#aaa',
-    padding: '20px',
-  },
-  petsList: {
-    display: 'flex',
-    flexDirection: 'column' as const,
-    gap: '8px',
-  },
-  petItem: {
-    display: 'flex',
-    alignItems: 'center',
-    background: '#222',
-    borderRadius: '8px',
-    padding: '10px',
-    border: '1px solid #444',
-    cursor: 'pointer',
-    transition: 'background 0.2s',
-  },
-  petItemSelected: {
-    border: '2px solid #ffcc00',
-  },
-  petItemLocked: {
-    opacity: 0.5,
-    cursor: 'not-allowed',
-  },
-  petItemEmoji: {
-    fontSize: '32px',
-    marginRight: '12px',
-  },
-  petItemInfo: {
-    flex: 1,
-  },
-  petItemName: {
-    fontSize: '16px',
-    fontWeight: 'bold',
-  },
-  petItemCondition: {
-    fontSize: '11px',
-    color: '#aaa',
-    marginTop: '2px',
-  },
-  petItemSelectedMark: {
-    color: '#ffcc00',
-    fontWeight: 'bold',
-    fontSize: '18px',
-    marginLeft: '8px',
-  },
-  referralText: {
-    fontSize: '14px',
-    color: '#ccc',
-    marginBottom: '10px',
-  },
-  inviteLinkContainer: {
-    display: 'flex',
-    gap: '8px',
-    marginBottom: '10px',
-  },
-  inviteLinkInput: {
-    flex: 1,
-    background: '#222',
-    border: '1px solid #444',
-    borderRadius: '6px',
-    padding: '8px',
-    color: '#fff',
-    fontSize: '12px',
-    outline: 'none',
-  },
-  copyButton: {
-    background: '#444',
-    border: 'none',
-    borderRadius: '6px',
-    padding: '8px 12px',
-    color: '#fff',
-    cursor: 'pointer',
-    fontSize: '16px',
-  },
-  shopSection: {
-    marginBottom: '20px',
-  },
-  shopSectionTitle: {
-    fontSize: '16px',
-    fontWeight: 'bold',
-    color: '#ffcc00',
-    marginBottom: '8px',
-    paddingBottom: '4px',
-    borderBottom: '1px solid #444',
-  },
-  shopItem: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    background: '#222',
-    padding: '12px',
-    borderRadius: '8px',
-    marginBottom: '8px',
-    cursor: 'pointer',
-    border: '1px solid #444',
-    transition: 'background 0.2s',
-  },
-} as const;
+  modalOverlay: { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  modalContent: { background: '#111', borderRadius: '20px', width: '90%', maxWidth: '380px', padding: '16px', border: '1px solid #333', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', transformOrigin: 'top', animation: 'slideIn 0.3s ease' },
+  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' },
+  modalTitle: { fontSize: '18px', fontWeight: 'bold', color: '#fff', margin: 0 },
+  closeButton: { background: 'none', border: 'none', color: '#aaa', fontSize: '22px', cursor: 'pointer' },
+  tabs: { display: 'flex', marginBottom: '12px', borderBottom: '1px solid #444' },
+  tabButton: { flex: 1, background: 'none', border: 'none', color: '#fff', padding: '8px', cursor: 'pointer', fontSize: '14px', borderBottom: '2px solid transparent' },
+  activeTab: { borderBottom: '2px solid #ffcc00', color: '#ffcc00' },
+
+  // Profile tab styles
+  profileContent: { display: 'flex', flexDirection: 'column' as const, gap: '16px' },
+  profileHeader: { display: 'flex', gap: '12px', alignItems: 'center' },
+  profileAvatarLarge: { width: '60px', height: '60px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', fontWeight: 'bold', border: '2px solid #ffcc00' },
+  profileNames: { display: 'flex', flexDirection: 'column' as const, gap: '2px' },
+  profileName: { fontSize: '18px', fontWeight: 'bold', color: '#ffcc00' },
+  profileUsername: { fontSize: '12px', color: '#aaa' },
+  profileDays: { fontSize: '12px', color: '#888', display: 'flex', alignItems: 'center', gap: '4px' },
+
+  statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginTop: '8px' },
+  statBox: { background: '#222', borderRadius: '10px', padding: '12px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid #444' },
+  statBoxValue: { fontSize: '20px', fontWeight: 'bold', color: '#ffcc00' },
+  statBoxLabel: { fontSize: '11px', color: '#aaa', marginTop: '2px' },
+
+  inviteButton: { background: '#ffcc00', color: '#000', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '8px' },
+
+  leadersPlaceholder: { textAlign: 'center' as const, color: '#aaa', padding: '16px' },
+
+  // Pets list styles
+  petsList: { display: 'flex', flexDirection: 'column' as const, gap: '6px' },
+  petItem: { display: 'flex', alignItems: 'center', background: '#222', borderRadius: '8px', padding: '8px', border: '1px solid #444', cursor: 'pointer' },
+  petItemSelected: { border: '2px solid #ffcc00' },
+  petItemLocked: { opacity: 0.5, cursor: 'not-allowed' },
+  petItemEmoji: { fontSize: '28px', marginRight: '10px' },
+  petItemInfo: { flex: 1 },
+  petItemName: { fontSize: '14px', fontWeight: 'bold' },
+  petItemCondition: { fontSize: '10px', color: '#aaa' },
+  petItemSelectedMark: { color: '#ffcc00', fontWeight: 'bold', fontSize: '16px', marginLeft: '6px' },
+  upgradeButton: { marginLeft: '6px', background: '#ffcc00', border: 'none', borderRadius: '4px', padding: '4px 6px', cursor: 'pointer', fontSize: '12px' },
+
+  referralButton: { background: '#666', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px', fontSize: '13px', cursor: 'pointer', width: '100%', marginTop: '8px' },
+  eventBanner: { background: '#ffcc00', color: '#000', padding: '8px', textAlign: 'center' as const, borderRadius: '8px', marginBottom: '8px', fontWeight: 'bold', fontSize: '13px' },
+  inviteLinkContainer: { display: 'flex', gap: '6px', marginBottom: '8px' },
+  inviteLinkInput: { flex: 1, background: '#222', border: '1px solid #444', borderRadius: '6px', padding: '6px', color: '#fff', fontSize: '11px', outline: 'none' },
+  copyButton: { background: '#444', border: 'none', borderRadius: '6px', padding: '6px 10px', color: '#fff', cursor: 'pointer', fontSize: '14px' },
+  shopSection: { marginBottom: '16px' },
+  shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#222', padding: '10px', borderRadius: '8px', marginBottom: '6px', cursor: 'pointer', border: '1px solid #444', fontSize: '13px' },
+  questItem: { background: '#222', padding: '8px', borderRadius: '8px', marginBottom: '6px', fontSize: '13px' },
+  tutorialBox: { background: '#111', padding: '24px', borderRadius: '20px', textAlign: 'center' as const, maxWidth: '280px' },
+};
+
+// Global animations
+const styleSheet = document.createElement("style");
+styleSheet.textContent = `
+@keyframes floatUp {
+  0% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-50px); }
+}
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-50px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255,204,0,0.7); }
+  70% { box-shadow: 0 0 0 20px rgba(255,204,0,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,204,0,0); }
+}
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes flicker {
+  0% { opacity: 0.6; transform: scale(1); }
+  100% { opacity: 1; transform: scale(1.2); }
+}`;
+document.head.appendChild(styleSheet);
 
 export default App;
