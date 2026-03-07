@@ -82,7 +82,7 @@ const SHOP_ITEMS: InventoryItem[] = [
 ];
 
 // -------------------- Custom Hooks --------------------
-
+// useLevel
 function useLevel(totalClicks: number) {
   const getThreshold = (lvl: number) => (lvl <= 8 ? 200 * lvl - 100 : 300 * lvl - 900);
   let level = 1;
@@ -95,6 +95,7 @@ function useLevel(totalClicks: number) {
   return { level, expInCurrent, expNeeded, percent };
 }
 
+// useDailyBonus
 function useDailyBonus() {
   const [daily, setDaily] = useState<DailyBonus>(() => {
     const saved = localStorage.getItem('dailyBonus');
@@ -128,6 +129,7 @@ function useDailyBonus() {
   return { daily, claimDaily };
 }
 
+// useQuests
 function useQuests(initial: Quest[]) {
   const [quests, setQuests] = useState<Quest[]>(() => {
     const saved = localStorage.getItem('quests');
@@ -168,6 +170,7 @@ function useQuests(initial: Quest[]) {
   return { quests, updateProgress, claimQuest };
 }
 
+// useInventory
 function useInventory() {
   const [inventory, setInventory] = useState<InventoryItem[]>(() => {
     const saved = localStorage.getItem('inventory');
@@ -201,6 +204,7 @@ function useInventory() {
   return { inventory, addItem, removeItem, useItem };
 }
 
+// usePets
 function usePets(selectedPetId: string, setSelectedPetId: (id: string) => void, level: number, friendsCount: number, eventActive: boolean) {
   const [petLevels, setPetLevels] = useState<Record<string, number>>(() => {
     const saved = localStorage.getItem('petLevels');
@@ -234,13 +238,19 @@ function usePets(selectedPetId: string, setSelectedPetId: (id: string) => void, 
     return pet.bonus.value * level;
   }, [selectedPetId, petLevels]);
 
+  const getCurrentPetBonusType = useCallback(() => {
+    const pet = PETS.find(p => p.id === selectedPetId);
+    return pet?.bonus?.type;
+  }, [selectedPetId]);
+
   useEffect(() => {
     localStorage.setItem('petLevels', JSON.stringify(petLevels));
   }, [petLevels]);
 
-  return { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus };
+  return { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus, getCurrentPetBonusType };
 }
 
+// useSpecialEvent
 function useSpecialEvent() {
   const [event, setEvent] = useState<SpecialEvent | null>(null);
 
@@ -261,6 +271,7 @@ function useSpecialEvent() {
   return { specialEvent: event, setSpecialEvent: setEvent };
 }
 
+// useResources
 function useResources() {
   const [food, setFood] = useState<number | null>(null);
   const [gems, setGems] = useState<number | null>(null);
@@ -362,7 +373,7 @@ function App() {
   const inviteLink = `https://t.me/ваш_бот?start=ref_${userId}`;
 
   const [selectedPetId, setSelectedPetId] = useState<string>(() => localStorage.getItem('selectedPet') || 'dog');
-  const { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus } = usePets(selectedPetId, setSelectedPetId, level, friendsCount, eventActive);
+  const { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus, getCurrentPetBonusType } = usePets(selectedPetId, setSelectedPetId, level, friendsCount, eventActive);
   const currentPet = PETS.find(p => p.id === selectedPetId) || PETS[0];
 
   const totalClickPower = useMemo(() => {
@@ -569,6 +580,19 @@ function App() {
     });
   };
 
+  // Форматирование бонуса для отображения
+  const bonusDisplay = useMemo(() => {
+    const bonus = getCurrentPetBonus();
+    const type = getCurrentPetBonusType();
+    if (!bonus) return null;
+    switch (type) {
+      case 'clickPower': return `+${bonus.toFixed(1)} к силе клика`;
+      case 'regen': return `+${bonus.toFixed(1)} к регенерации`;
+      case 'maxStamina': return `+${bonus} к макс. энергии`;
+      default: return null;
+    }
+  }, [getCurrentPetBonus, getCurrentPetBonusType]);
+
   if (loading) {
     return <div style={styles.loadingContainer}>Загружаем питомца...</div>;
   }
@@ -624,6 +648,11 @@ function App() {
             <div style={{ ...styles.barFill, width: `${(stamina / maxStamina) * 100}%`, background: '#ffcc00' }} />
             <span style={styles.barText}>{stamina}/{maxStamina}</span>
           </div>
+          {bonusDisplay && (
+            <div style={styles.bonusIndicator}>
+              🐾 Бонус: {bonusDisplay}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1187,7 +1216,7 @@ const Tutorial: React.FC<TutorialProps> = ({ onComplete }) => {
 const styles = {
   container: { 
     height: '100vh',
-    background: '#000', 
+    background: 'linear-gradient(145deg, #0f1215 0%, #1a1e2a 100%)',
     color: '#fff', 
     padding: '12px', 
     fontFamily: 'sans-serif', 
@@ -1199,13 +1228,13 @@ const styles = {
   loadingContainer: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#000', color: '#fff' },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' },
   profile: { display: 'flex', alignItems: 'center', gap: '6px' },
-  avatar: { width: '36px', height: '36px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', border: '2px solid #666', cursor: 'pointer' },
-  friendsBadge: { background: '#222', borderRadius: '20px', padding: '4px 8px', fontSize: '13px', cursor: 'pointer', border: '1px solid #444', display: 'flex', alignItems: 'center', gap: '4px' },
+  avatar: { width: '36px', height: '36px', borderRadius: '50%', background: 'linear-gradient(135deg, #ffcc00, #ff8800)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', border: '2px solid rgba(255,255,255,0.3)', cursor: 'pointer', boxShadow: '0 4px 8px rgba(0,0,0,0.3)' },
+  friendsBadge: { background: 'rgba(255,255,255,0.1)', backdropFilter: 'blur(5px)', borderRadius: '20px', padding: '4px 8px', fontSize: '13px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', gap: '4px' },
   nameDisplay: { display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' },
-  petName: { fontSize: '18px', fontWeight: 'bold', color: '#fff' },
+  petName: { fontSize: '18px', fontWeight: 'bold', color: '#fff', textShadow: '0 2px 4px rgba(0,0,0,0.5)' },
   editIcon: { fontSize: '14px', opacity: 0.7 },
   nameEditor: { display: 'flex', alignItems: 'center', gap: '4px' },
-  nameInput: { background: '#222', border: '1px solid #444', borderRadius: '6px', padding: '4px 8px', color: '#fff', fontSize: '14px', outline: 'none' },
+  nameInput: { background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.3)', borderRadius: '6px', padding: '4px 8px', color: '#fff', fontSize: '14px', outline: 'none' },
   nameSaveBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
   nameCancelBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
   scrollableContent: {
@@ -1213,39 +1242,43 @@ const styles = {
     overflowY: 'auto' as const,
     marginBottom: '8px',
     paddingRight: '2px',
+    display: 'flex',
+    flexDirection: 'column' as const,
   },
   stats: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginTop: '8px', marginBottom: '8px' },
   statCard: {
-    background: '#222',
-    borderRadius: '8px',
-    padding: '6px 2px',
+    background: 'rgba(30, 35, 45, 0.7)',
+    backdropFilter: 'blur(8px)',
+    borderRadius: '12px',
+    padding: '8px 2px',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
-    border: '1px solid #444',
-    boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
+    border: '1px solid rgba(255,255,255,0.1)',
+    boxShadow: '0 8px 16px rgba(0,0,0,0.2)',
   },
-  statValue: { fontSize: '15px', fontWeight: 'bold', color: '#ffcc00' },
+  statValue: { fontSize: '15px', fontWeight: 'bold', color: '#ffcc00', textShadow: '0 0 8px rgba(255,204,0,0.5)' },
   statLabel: { fontSize: '9px', color: '#aaa', marginTop: '2px' },
-  barWrapper: { marginBottom: '2px' },
-  barLabel: { fontSize: '12px', fontWeight: 'bold', color: '#fff', marginBottom: '2px' },
-  barBg: { background: '#222', height: '16px', borderRadius: '6px', position: 'relative' as const, overflow: 'hidden' },
-  barFill: { height: '100%', borderRadius: '6px', transition: 'width 0.3s ease' },
-  barText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '16px', fontSize: '10px', color: '#000', fontWeight: 'bold' },
-  petContainer: { position: 'relative' as const, margin: '5px auto 8px', width: 'fit-content' },
+  barWrapper: { marginBottom: '8px' },
+  barLabel: { fontSize: '12px', fontWeight: 'bold', color: '#fff', marginBottom: '2px', textShadow: '0 2px 4px rgba(0,0,0,0.5)' },
+  barBg: { background: 'rgba(20,20,30,0.7)', backdropFilter: 'blur(4px)', height: '16px', borderRadius: '8px', position: 'relative' as const, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.1)' },
+  barFill: { height: '100%', borderRadius: '8px', transition: 'width 0.3s ease', boxShadow: '0 0 8px currentColor' },
+  barText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '16px', fontSize: '10px', color: '#fff', fontWeight: 'bold', textShadow: '0 1px 2px rgba(0,0,0,0.8)' },
+  petContainer: { position: 'relative' as const, margin: '30px auto 20px', width: 'fit-content' },
   petCircle: {
     position: 'relative' as const,
     width: '200px',
     height: '180px',
-    background: '#222',
+    background: 'radial-gradient(circle at 30% 30%, #3a3f4a, #1e2228)',
     borderRadius: '50%',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
     cursor: 'pointer',
-    border: '3px solid #444',
+    border: '3px solid rgba(255,204,0,0.3)',
     overflow: 'hidden',
-    transition: 'box-shadow 0.3s',
+    transition: 'box-shadow 0.3s, transform 0.2s',
+    boxShadow: '0 20px 30px rgba(0,0,0,0.5), 0 0 20px rgba(255,204,0,0.2)',
   },
   clickFlash: {
     position: 'absolute' as const,
@@ -1254,21 +1287,35 @@ const styles = {
     width: '100%',
     height: '100%',
     borderRadius: '50%',
-    background: 'radial-gradient(circle, rgba(255,204,0,0.6) 0%, rgba(255,204,0,0) 70%)',
+    background: 'radial-gradient(circle, rgba(255,204,0,0.8) 0%, rgba(255,204,0,0) 70%)',
     animation: 'fadeOut 0.3s ease-out forwards',
     pointerEvents: 'none' as const,
   },
-  energyWrapper: { marginTop: '5px', marginBottom: '8px' },
+  energyWrapper: { marginTop: '10px', marginBottom: '8px' },
+  bonusIndicator: {
+    marginTop: '6px',
+    fontSize: '11px',
+    color: '#ffaa00',
+    textAlign: 'center' as const,
+    background: 'rgba(0,0,0,0.3)',
+    padding: '4px 8px',
+    borderRadius: '20px',
+    backdropFilter: 'blur(4px)',
+    display: 'inline-block',
+    width: 'fit-content',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+  },
   buttonsContainer: { marginTop: '0px' },
   actionsRow: { display: 'flex', gap: '6px', marginBottom: '6px' },
-  button: { flex: 1, padding: '8px', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', transition: 'opacity 0.2s, transform 0.1s', touchAction: 'manipulation' },
-  feedButton: { background: '#666', color: '#fff' },
-  playButton: { background: '#666', color: '#fff' },
-  shopButton: { background: '#666', color: '#fff' },
+  button: { flex: 1, padding: '10px', border: 'none', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', touchAction: 'manipulation', boxShadow: '0 4px 8px rgba(0,0,0,0.3)', background: 'linear-gradient(145deg, #ffcc00, #ffaa00)', color: '#000', textShadow: '0 1px 2px rgba(255,255,255,0.3)' },
+  feedButton: { background: 'linear-gradient(145deg, #ff9216, #e07b00)', color: '#fff' },
+  playButton: { background: 'linear-gradient(145deg, #0285ff, #0066cc)', color: '#fff' },
+  shopButton: { background: 'linear-gradient(145deg, #666, #444)', color: '#fff' },
   modalOverlay: { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
-  modalContent: { background: '#111', borderRadius: '20px', width: '90%', maxWidth: '350px', padding: '14px', border: '1px solid #333', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', transformOrigin: 'top', animation: 'slideIn 0.3s ease' },
+  modalContent: { background: 'linear-gradient(145deg, #1a1e2a, #0f1215)', borderRadius: '24px', width: '90%', maxWidth: '350px', padding: '14px', border: '1px solid rgba(255,204,0,0.3)', boxShadow: '0 20px 40px rgba(0,0,0,0.6)', transformOrigin: 'top', animation: 'slideIn 0.3s ease' },
   modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },
-  modalTitle: { fontSize: '16px', fontWeight: 'bold', color: '#fff', margin: 0 },
+  modalTitle: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00', margin: 0 },
   closeButton: { background: 'none', border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer' },
   tabs: { display: 'flex', marginBottom: '10px', borderBottom: '1px solid #444' },
   tabButton: { flex: 1, background: 'none', border: 'none', color: '#fff', padding: '6px', cursor: 'pointer', fontSize: '13px', borderBottom: '2px solid transparent' },
@@ -1277,24 +1324,24 @@ const styles = {
   // Profile tab styles
   profileContent: { display: 'flex', flexDirection: 'column' as const, gap: '12px' },
   profileHeader: { display: 'flex', gap: '10px', alignItems: 'center' },
-  profileAvatarLarge: { width: '50px', height: '50px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 'bold', border: '2px solid #ffcc00' },
+  profileAvatarLarge: { width: '50px', height: '50px', borderRadius: '50%', background: 'linear-gradient(135deg, #ffcc00, #ff8800)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 'bold', border: '2px solid #ffcc00', boxShadow: '0 0 20px rgba(255,204,0,0.5)' },
   profileNames: { display: 'flex', flexDirection: 'column' as const, gap: '2px' },
   profileName: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00' },
   profileUsername: { fontSize: '11px', color: '#aaa' },
   profileDays: { fontSize: '11px', color: '#888', display: 'flex', alignItems: 'center', gap: '4px' },
 
   statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px', marginTop: '6px' },
-  statBox: { background: '#222', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid #444' },
+  statBox: { background: 'rgba(30,35,45,0.7)', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid rgba(255,255,255,0.1)' },
   statBoxValue: { fontSize: '18px', fontWeight: 'bold', color: '#ffcc00' },
   statBoxLabel: { fontSize: '10px', color: '#aaa', marginTop: '2px' },
 
-  inviteButton: { background: '#ffcc00', color: '#000', border: 'none', borderRadius: '6px', padding: '10px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '6px' },
+  inviteButton: { background: 'linear-gradient(145deg, #ffcc00, #ffaa00)', color: '#000', border: 'none', borderRadius: '6px', padding: '10px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '6px', boxShadow: '0 4px 8px rgba(0,0,0,0.3)' },
 
   leadersPlaceholder: { textAlign: 'center' as const, color: '#aaa', padding: '14px' },
 
   // Pets list styles
   petsList: { display: 'flex', flexDirection: 'column' as const, gap: '4px' },
-  petItem: { display: 'flex', alignItems: 'center', background: '#222', borderRadius: '6px', padding: '6px', border: '1px solid #444', cursor: 'pointer' },
+  petItem: { display: 'flex', alignItems: 'center', background: 'rgba(30,35,45,0.7)', borderRadius: '6px', padding: '6px', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' },
   petItemSelected: { border: '2px solid #ffcc00' },
   petItemLocked: { opacity: 0.5, cursor: 'not-allowed' },
   petItemEmoji: { fontSize: '24px', marginRight: '8px' },
@@ -1304,14 +1351,14 @@ const styles = {
   petItemSelectedMark: { color: '#ffcc00', fontWeight: 'bold', fontSize: '14px', marginLeft: '4px' },
   upgradeButton: { marginLeft: '4px', background: '#ffcc00', border: 'none', borderRadius: '4px', padding: '3px 5px', cursor: 'pointer', fontSize: '10px' },
 
-  referralButton: { background: '#666', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px', fontSize: '11px', cursor: 'pointer', width: '100%', marginTop: '6px' },
-  eventBanner: { background: '#ffcc00', color: '#000', padding: '6px', textAlign: 'center' as const, borderRadius: '6px', marginBottom: '6px', fontWeight: 'bold', fontSize: '11px' },
+  referralButton: { background: 'linear-gradient(145deg, #666, #444)', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px', fontSize: '11px', cursor: 'pointer', width: '100%', marginTop: '6px' },
+  eventBanner: { background: 'linear-gradient(90deg, #ffcc00, #ffaa00)', color: '#000', padding: '6px', textAlign: 'center' as const, borderRadius: '6px', marginBottom: '6px', fontWeight: 'bold', fontSize: '11px', boxShadow: '0 4px 8px rgba(0,0,0,0.3)' },
   inviteLinkContainer: { display: 'flex', gap: '4px', marginBottom: '6px' },
-  inviteLinkInput: { flex: 1, background: '#222', border: '1px solid #444', borderRadius: '4px', padding: '5px', color: '#fff', fontSize: '10px', outline: 'none' },
+  inviteLinkInput: { flex: 1, background: 'rgba(30,35,45,0.7)', border: '1px solid #444', borderRadius: '4px', padding: '5px', color: '#fff', fontSize: '10px', outline: 'none' },
   copyButton: { background: '#444', border: 'none', borderRadius: '4px', padding: '5px 8px', color: '#fff', cursor: 'pointer', fontSize: '12px' },
   shopSection: { marginBottom: '12px' },
-  shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#222', padding: '8px', borderRadius: '6px', marginBottom: '4px', cursor: 'pointer', border: '1px solid #444', fontSize: '11px' },
-  questItem: { background: '#222', padding: '6px', borderRadius: '6px', marginBottom: '4px', fontSize: '11px' },
+  shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(30,35,45,0.7)', padding: '8px', borderRadius: '6px', marginBottom: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.1)', fontSize: '11px' },
+  questItem: { background: 'rgba(30,35,45,0.7)', padding: '6px', borderRadius: '6px', marginBottom: '4px', fontSize: '11px' },
   tutorialBox: { background: '#111', padding: '20px', borderRadius: '16px', textAlign: 'center' as const, maxWidth: '250px' },
 };
 
