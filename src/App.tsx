@@ -1128,7 +1128,7 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
               <span style={styles.statBoxLabel}>Уровень</span>
             </div>
             <div style={styles.statBox}>
-              <span style={styles.statBoxValue}>{gems}</span>
+              <span style={styles.statBoxValue}>{typeof gems === 'number' ? gems.toFixed(1) : gems}</span>
               <span style={styles.statBoxLabel}>Алмазы</span>
             </div>
           </div>
