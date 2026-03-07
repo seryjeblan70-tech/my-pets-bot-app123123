@@ -22,7 +22,7 @@ interface InventoryItem {
   description: string;
   emoji: string;
   quantity: number;
-  type: 'food' | 'boost' | 'skin';
+  type: 'food' | 'boost' | 'skin' | 'goldenTicket';
   effect?: { type: string; value: number; duration?: number };
 }
 
@@ -60,9 +60,16 @@ interface Achievement {
   completed: boolean;
 }
 
+interface ToastMessage {
+  id: number;
+  text: string;
+  type: 'success' | 'error' | 'info';
+}
+
 // -------------------- Constants --------------------
 const MAX_FOOD = 100;
 const BASE_CLICK_POWER = 1;
+const MAX_FOOD_PURCHASES_PER_DAY = 10;
 
 const INITIAL_PET_LEVELS: Record<string, number> = { dog: 1, cat: 1, rabbit: 1 };
 
@@ -87,19 +94,10 @@ const INITIAL_QUESTS: Quest[] = [
 
 const SHOP_ITEMS: InventoryItem[] = [
   { id: 'lucky_ticket', name: 'Счастливый билет', description: 'Удваивает клики на 30 секунд', emoji: '🎫', quantity: 0, type: 'boost', effect: { type: 'doubleClick', value: 2, duration: 30 } },
+  { id: 'golden_ticket', name: 'Золотой билет', description: 'Удваивает алмазы на 60 секунд', emoji: '🎟️', quantity: 0, type: 'goldenTicket', effect: { type: 'doubleGems', value: 2, duration: 60 } },
   { id: 'food_bag', name: 'Мешок еды', description: '+30 еды', emoji: '🍖', quantity: 0, type: 'food' },
   { id: 'costume', name: 'Костюм супергероя', description: 'Изменяет внешность питомца на 1 час', emoji: '🦸', quantity: 0, type: 'skin' },
 ];
-
-// -------------------- Toast Component (simple) --------------------
-interface ToastMessage {
-  id: number;
-  text: string;
-  type: 'success' | 'error' | 'info';
-}
-
-let toastId = 0;
-const toasts: ToastMessage[] = [];
 
 // -------------------- Custom Hooks --------------------
 
@@ -342,7 +340,6 @@ function useResources() {
   };
 }
 
-// Достижения
 function useAchievements() {
   const [achievements, setAchievements] = useState<Achievement[]>(() => {
     const saved = localStorage.getItem('achievements');
@@ -362,23 +359,21 @@ function useAchievements() {
 
   const checkAchievements = useCallback((state: any, addGems: (amt: number) => void) => {
     let updated = false;
-    setAchievements(prev => prev.map(ach => {
-      if (!ach.completed && ach.condition(state)) {
-        addGems(ach.reward);
-        updated = true;
-        return { ...ach, completed: true };
+    setAchievements(prev => {
+      const newAch = prev.map(ach => {
+        if (!ach.completed && ach.condition(state)) {
+          addGems(ach.reward);
+          updated = true;
+          return { ...ach, completed: true };
+        }
+        return ach;
+      });
+      if (updated) {
+        localStorage.setItem('achievements', JSON.stringify(newAch));
       }
-      return ach;
-    }));
-    if (updated) {
-      // Сохраняем
-      localStorage.setItem('achievements', JSON.stringify(achievements));
-    }
-  }, [achievements]);
-
-  useEffect(() => {
-    localStorage.setItem('achievements', JSON.stringify(achievements));
-  }, [achievements]);
+      return newAch;
+    });
+  }, []);
 
   return { achievements, checkAchievements };
 }
@@ -416,6 +411,30 @@ function App() {
   const [combo, setCombo] = useState<number>(0);
   const comboTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Лимит покупок еды
+  const [foodPurchasesToday, setFoodPurchasesToday] = useState<number>(() => {
+    const saved = localStorage.getItem('foodPurchasesToday');
+    return saved ? parseInt(saved) : 0;
+  });
+  const [lastFoodPurchaseReset, setLastFoodPurchaseReset] = useState<string>(() => {
+    const saved = localStorage.getItem('lastFoodPurchaseReset');
+    return saved || new Date().toISOString().split('T')[0];
+  });
+
+  // Бустеры
+  const [boostActive, setBoostActive] = useState(false);
+  const [boostTimeLeft, setBoostTimeLeft] = useState(0);
+  const originalClickPowerRef = useRef(clickPower);
+
+  const [gemBoostActive, setGemBoostActive] = useState(false);
+  const [gemBoostTimeLeft, setGemBoostTimeLeft] = useState(0);
+
+  // Костюм
+  const [costumeActive, setCostumeActive] = useState(false);
+  const [costumeTimeLeft, setCostumeTimeLeft] = useState(0);
+  const [costumeEmoji, setCostumeEmoji] = useState<string>(''); // запасной вариант
+
+  // Дата первого входа
   const [firstLoginDate, setFirstLoginDate] = useState<string>(() => {
     const saved = localStorage.getItem('firstLoginDate');
     if (saved) return saved;
@@ -434,7 +453,7 @@ function App() {
 
   const [userAvatar, setUserAvatar] = useState('');
   const userId = tg?.initDataUnsafe?.user?.id || 'guest123';
-  const inviteLink = `https://t.me/ваш_бот?start=ref_${userId}`;
+  const inviteLink = `https://t.me/yourpetaibot?start=ref_${userId}`;
 
   const [selectedPetId, setSelectedPetId] = useState<string>(() => localStorage.getItem('selectedPet') || 'dog');
   const { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus, getCurrentPetBonusType } = usePets(selectedPetId, setSelectedPetId, level, friendsCount, eventActive);
@@ -447,6 +466,7 @@ function App() {
     return base;
   }, [clickPower, currentPet, getCurrentPetBonus]);
 
+  // Применение бонусов питомца
   useEffect(() => {
     if (currentPet.bonus?.type === 'regen') {
       const bonus = getCurrentPetBonus();
@@ -467,6 +487,7 @@ function App() {
     }
   }, [currentPet, getCurrentPetBonus, setMaxStamina, setStamina]);
 
+  // UI states
   const [loading, setLoading] = useState(true);
   const [showShop, setShowShop] = useState(false);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
@@ -477,6 +498,7 @@ function App() {
   const [showTutorial, setShowTutorial] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
   const [activeProfileTab, setActiveProfileTab] = useState<'profile' | 'leaders' | 'pets' | 'achievements'>('profile');
+  const [prevProfileTab, setPrevProfileTab] = useState<'profile' | 'leaders' | 'pets' | 'achievements'>('profile');
 
   const [isClicking, setIsClicking] = useState(false);
   const [floaters, setFloaters] = useState<Array<{ id: number; value: number; x: number; y: number; emoji?: string }>>([]);
@@ -489,7 +511,7 @@ function App() {
   const lastClickTime = useRef(0);
   const [gemsFlash, setGemsFlash] = useState(false);
 
-  // Система уведомлений
+  // Toast
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
     const id = Date.now() + Math.random();
@@ -525,9 +547,21 @@ function App() {
   };
 
   const handleOpenAchievements = () => {
+    setPrevProfileTab(activeProfileTab);
     closeAllModals();
     setShowAchievements(true);
   };
+
+  // Сброс лимита покупок еды при смене дня
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (lastFoodPurchaseReset !== today) {
+      setFoodPurchasesToday(0);
+      setLastFoodPurchaseReset(today);
+      localStorage.setItem('foodPurchasesToday', '0');
+      localStorage.setItem('lastFoodPurchaseReset', today);
+    }
+  }, [lastFoodPurchaseReset]);
 
   useEffect(() => {
     if (tg) {
@@ -616,6 +650,7 @@ function App() {
 
     let gain = totalClickPower;
     if (specialEvent?.active && specialEvent.type === 'doubleRewards') gain *= 2;
+    if (gemBoostActive) gain *= 2; // золотой билет
 
     setGems(g => g! + gain);
     setGemsFlash(true);
@@ -624,21 +659,16 @@ function App() {
     setTotalClicks(prev => prev + 1);
     updateProgress('click', 1);
 
-    // Партиклы
-    if (petRef.current) {
-      const rect = petRef.current.getBoundingClientRect();
-      for (let i = 0; i < 3; i++) {
-        const x = Math.random() * rect.width * 0.8 + rect.width * 0.1;
-        const y = Math.random() * rect.height * 0.5 + rect.height * 0.2;
-        const emoji = Math.random() > 0.5 ? '✨' : '💎';
-        setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: gain, x, y, emoji }]);
-      }
+    for (let i = 0; i < 3; i++) {
+      const x = Math.random() * 200 + 25;
+      const y = Math.random() * 150 + 15;
+      const emoji = Math.random() > 0.5 ? '✨' : '💎';
+      setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: gain, x, y, emoji }]);
     }
 
     vibrate(30);
     sendAction('click', { power: gain });
 
-    // Проверка достижений
     const state = { totalClicks: totalClicks + 1, petLevels, friendsCount, gems: gems! + gain, totalStaminaRestored, boostersUsed, foodEaten, maxCombo: maxCombo > combo ? maxCombo : combo, daysInGame, isPetUnlocked };
     checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
@@ -664,6 +694,7 @@ function App() {
     setStamina(prev => prev - 20);
     let reward = 30;
     if (specialEvent?.active && specialEvent.type === 'doubleRewards') reward *= 2;
+    if (gemBoostActive) reward *= 2; // золотой билет тоже влияет на награду за игру
     setGems(prev => (prev ?? 0) + reward);
     setGemsFlash(true);
     setTimeout(() => setGemsFlash(false), 300);
@@ -680,17 +711,28 @@ function App() {
     showToast('✅ Ссылка скопирована!', 'success');
     setFriendsCount(prev => prev + 1);
     updateProgress('invite', 1);
-    setGems(prev => (prev ?? 0) + 50);
+    setGems(prev => (prev ?? 0) + 1000); // 1000 вместо 50
     setGemsFlash(true);
     setTimeout(() => setGemsFlash(false), 300);
     vibrate(100);
-    const state = { totalClicks, petLevels, friendsCount: friendsCount + 1, gems: gems! + 50, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
+    const state = { totalClicks, petLevels, friendsCount: friendsCount + 1, gems: gems! + 1000, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
     checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
   const buyItem = (item: InventoryItem, price: number) => {
     if (gems === null) return;
     if (gems < price) return showToast('Не хватает алмазов!', 'error');
+
+    // Лимит на покупку еды
+    if (item.id === 'food_bag') {
+      if (foodPurchasesToday >= MAX_FOOD_PURCHASES_PER_DAY) {
+        showToast('Лимит покупок еды на сегодня исчерпан!', 'error');
+        return;
+      }
+      setFoodPurchasesToday(prev => prev + 1);
+      localStorage.setItem('foodPurchasesToday', (foodPurchasesToday + 1).toString());
+    }
+
     setGems(prev => prev! - price);
     addItem(item.id, 1);
     updateProgress('upgrade', 1);
@@ -700,10 +742,6 @@ function App() {
     const state = { totalClicks, petLevels, friendsCount, gems: gems! - price, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
     checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
-
-  const [boostActive, setBoostActive] = useState(false);
-  const [boostTimeLeft, setBoostTimeLeft] = useState(0);
-  const originalClickPowerRef = useRef(clickPower);
 
   const handleUseItem = (item: InventoryItem) => {
     useItem(item.id, (usedItem) => {
@@ -728,7 +766,27 @@ function App() {
           });
         }, 1000);
         setBoostersUsed(prev => prev + 1);
-        showToast(`Бустер активирован на ${usedItem.effect.duration} сек!`, 'success');
+        showToast(`Бустер кликов активирован на ${usedItem.effect.duration} сек!`, 'success');
+        vibrate(100);
+      } else if (usedItem.type === 'goldenTicket' && usedItem.effect?.type === 'doubleGems') {
+        if (gemBoostActive) {
+          showToast('Бустер алмазов уже активен!', 'error');
+          return;
+        }
+        setGemBoostActive(true);
+        setGemBoostTimeLeft(usedItem.effect.duration);
+        const interval = setInterval(() => {
+          setGemBoostTimeLeft(prev => {
+            if (prev <= 1) {
+              clearInterval(interval);
+              setGemBoostActive(false);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+        setBoostersUsed(prev => prev + 1);
+        showToast(`Бустер алмазов активирован на ${usedItem.effect.duration} сек!`, 'success');
         vibrate(100);
       } else if (usedItem.type === 'food') {
         setFood(prev => Math.min((prev ?? 0) + 30, MAX_FOOD));
@@ -736,7 +794,25 @@ function App() {
         showToast('+30 еды!', 'success');
         vibrate(30);
       } else if (usedItem.type === 'skin') {
-        showToast('Скин надет! (функция в разработке)', 'info');
+        if (costumeActive) {
+          showToast('Костюм уже надет!', 'error');
+          return;
+        }
+        setCostumeActive(true);
+        setCostumeTimeLeft(3600); // 1 час = 3600 секунд
+        // Запоминаем оригинальную эмодзи? Нет, просто показываем отдельный индикатор
+        const interval = setInterval(() => {
+          setCostumeTimeLeft(prev => {
+            if (prev <= 1) {
+              clearInterval(interval);
+              setCostumeActive(false);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+        showToast('Костюм супергероя надет!', 'success');
+        vibrate(100);
       }
     });
   };
@@ -797,7 +873,7 @@ function App() {
 
         <Pet
           ref={petRef}
-          emoji={currentPet.emoji}
+          emoji={costumeActive ? '🦸' : currentPet.emoji} // смена эмодзи при костюме
           isClicking={isClicking}
           onClick={handleClick}
           floaters={floaters}
@@ -816,7 +892,17 @@ function App() {
           )}
           {boostActive && (
             <div style={styles.boostIndicator}>
-              🚀 Бустер: {boostTimeLeft}с
+              🚀 Бустер кликов: {boostTimeLeft}с
+            </div>
+          )}
+          {gemBoostActive && (
+            <div style={styles.boostIndicator}>
+              💎 Бустер алмазов: {gemBoostTimeLeft}с
+            </div>
+          )}
+          {costumeActive && (
+            <div style={styles.boostIndicator}>
+              🦸 Костюм: {Math.floor(costumeTimeLeft / 60)}м {costumeTimeLeft % 60}с
             </div>
           )}
         </div>
@@ -878,6 +964,8 @@ function App() {
           clickPower={totalClickPower}
           staminaRegenRate={staminaRegenRate}
           maxStamina={maxStamina}
+          foodPurchasesToday={foodPurchasesToday}
+          maxFoodPurchases={MAX_FOOD_PURCHASES_PER_DAY}
           onBuyClickUpgrade={() => {
             const cost = 10 + clickUpgradeLevel * 5;
             if (gems! < cost) return showToast('Не хватает алмазов', 'error');
@@ -957,7 +1045,11 @@ function App() {
       {showAchievements && (
         <AchievementsModal
           achievements={achievements}
-          onClose={() => setShowAchievements(false)}
+          onClose={() => {
+            setShowAchievements(false);
+            setShowProfileMenu(true);
+            setActiveProfileTab(prevProfileTab);
+          }}
         />
       )}
 
@@ -983,7 +1075,6 @@ function App() {
 }
 
 // -------------------- Component Definitions --------------------
-// (все компоненты с улучшенными стилями и новыми пропсами)
 
 interface HeaderProps {
   userAvatar: string;
@@ -1132,8 +1223,6 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ onFeed, onPlay, onShop, o
   </div>
 );
 
-// Модальные окна (сокращены для экономии места, но в реальном файле они должны быть полными)
-
 interface DailyBonusModalProps {
   daily: DailyBonus;
   onClaim: () => void;
@@ -1205,6 +1294,8 @@ interface ShopModalProps {
   clickPower: number;
   staminaRegenRate: number;
   maxStamina: number;
+  foodPurchasesToday: number;
+  maxFoodPurchases: number;
   onBuyClickUpgrade: () => void;
   onBuyRegenUpgrade: () => void;
   onBuyMaxStaminaUpgrade: () => void;
@@ -1216,6 +1307,7 @@ interface ShopModalProps {
 const ShopModal: React.FC<ShopModalProps> = ({
   gems, clickUpgradeLevel, regenUpgradeLevel, maxStaminaUpgradeLevel,
   clickPower, staminaRegenRate, maxStamina,
+  foodPurchasesToday, maxFoodPurchases,
   onBuyClickUpgrade, onBuyRegenUpgrade, onBuyMaxStaminaUpgrade,
   onBuyItem, shopItems, onClose
 }) => (
@@ -1246,11 +1338,12 @@ const ShopModal: React.FC<ShopModalProps> = ({
         {shopItems.map((item) => {
           let price = 50;
           if (item.id === 'food_bag') price = 40;
+          if (item.id === 'golden_ticket') price = 80;
           if (item.id === 'costume') price = 100;
           return (
             <div key={item.id} style={styles.shopItem} onClick={() => onBuyItem(item, price)}>
               <span>{item.emoji} {item.name} - {item.description}</span>
-              <span>{price} 💎</span>
+              <span>{price} 💎 {item.id === 'food_bag' && ` (${foodPurchasesToday}/${maxFoodPurchases})`}</span>
             </div>
           );
         })}
@@ -1269,7 +1362,7 @@ const InviteModal: React.FC<InviteModalProps> = ({ inviteLink, onCopy, onClose }
   <div style={styles.modalOverlay} onClick={onClose}>
     <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
       <div style={styles.modalHeader}><h3>👥 Пригласить друга</h3><button style={styles.closeButton} onClick={onClose}>✕</button></div>
-      <p>За каждого друга ты получишь 50 💎 после его первого клика.</p>
+      <p>За каждого друга ты получишь 1000 💎 после его первого клика.</p>
       <div style={styles.inviteLinkContainer}>
         <input type="text" value={inviteLink} readOnly style={styles.inviteLinkInput} />
         <button onClick={onCopy} style={styles.copyButton}>📋</button>
@@ -1349,7 +1442,7 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
           </div>
 
           <button onClick={onInvite} style={styles.inviteButton}>
-            👥 Пригласить друга
+            👥 Пригласить друга (1000💎)
           </button>
         </div>
       )}
