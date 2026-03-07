@@ -1,4 +1,4 @@
-const API_BASE_URL = 'https://my-pet-appiii.bothost.ru'; // твой домен без слеша
+const API_BASE_URL = 'https://mmymunuappstg.bothost.ru'; // твой домен без слеша
 
 function getInitData(): string {
   return window.Telegram?.WebApp?.initData || '';
