@@ -53,15 +53,13 @@ interface SpecialEvent {
 // -------------------- Constants --------------------
 const MAX_FOOD = 100;
 const BASE_CLICK_POWER = 1;
-const COMBO_RESET_TIME = 2000; // 2 секунды
-const COMBO_FIRE_THRESHOLD = 100; // порог огненного режима
 
 const INITIAL_PET_LEVELS: Record<string, number> = { dog: 1, cat: 1, rabbit: 1 };
 
 const PETS: Pet[] = [
   { id: 'dog', emoji: '🐶', name: 'Собачка', unlock: 'start', bonus: { type: 'clickPower', value: 0.1 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
   { id: 'cat', emoji: '🐱', name: 'Кошка', unlock: 'start', bonus: { type: 'regen', value: 0.2 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
-  { id: 'rabbit', emoji: '🐰', name: 'Зайка', unlock: 'start', bonus: { type: 'maxStamina', value: 5 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
+  { id: 'rabbit', emoji: '🐰', name: 'Зайчик', unlock: 'start', bonus: { type: 'maxStamina', value: 5 }, maxLevel: 5, upgradeCost: (lvl) => 20 + lvl * 10 },
   { id: 'fox', emoji: '🦊', name: 'Лиса', unlock: 'level', level: 5, bonus: { type: 'clickPower', value: 0.2 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
   { id: 'panda', emoji: '🐼', name: 'Панда', unlock: 'level', level: 10, bonus: { type: 'regen', value: 0.3 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
   { id: 'koala', emoji: '🐨', name: 'Коала', unlock: 'level', level: 15, bonus: { type: 'maxStamina', value: 10 }, maxLevel: 5, upgradeCost: (lvl) => 30 + lvl * 15 },
@@ -343,31 +341,6 @@ function App() {
   const [eventTimeLeft, setEventTimeLeft] = useState('');
   const { specialEvent, setSpecialEvent } = useSpecialEvent();
 
-  // Combo system
-  const [combo, setCombo] = useState(0);
-  const [maxCombo, setMaxCombo] = useState(0);
-  const comboTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
-  const resetCombo = useCallback(() => {
-    setCombo(0);
-    if (comboTimeoutRef.current) {
-      clearTimeout(comboTimeoutRef.current);
-      comboTimeoutRef.current = null;
-    }
-  }, []);
-
-  const incrementCombo = useCallback(() => {
-    setCombo(prev => {
-      const newCombo = prev + 1;
-      if (newCombo > maxCombo) setMaxCombo(newCombo);
-      return newCombo;
-    });
-    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
-    comboTimeoutRef.current = setTimeout(resetCombo, COMBO_RESET_TIME);
-  }, [maxCombo, resetCombo]);
-
-  const isComboFire = combo >= COMBO_FIRE_THRESHOLD;
-
   const [firstLoginDate, setFirstLoginDate] = useState<string>(() => {
     const saved = localStorage.getItem('firstLoginDate');
     if (saved) return saved;
@@ -507,6 +480,7 @@ function App() {
 
   const sendAction = (action: string, payload: any = {}) => {
     if (tg) tg.sendData(JSON.stringify({ action, ...payload }));
+    // Здесь можно заменить на вызов своего API
   };
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -519,8 +493,6 @@ function App() {
       alert('Нет сил! Подожди, энергия восстановится.');
       return;
     }
-
-    incrementCombo();
 
     setIsClicking(true);
     setTimeout(() => setIsClicking(false), 300);
@@ -647,8 +619,6 @@ function App() {
         isClicking={isClicking}
         onClick={handleClick}
         floaters={floaters}
-        combo={combo}
-        isComboFire={isComboFire}
       />
 
       <ActionButtons
@@ -876,11 +846,9 @@ interface PetProps {
   isClicking: boolean;
   onClick: (e: React.MouseEvent<HTMLDivElement>) => void;
   floaters: Array<{ id: number; value: number; x: number; y: number }>;
-  combo: number;
-  isComboFire: boolean;
 }
 
-const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onClick, floaters, combo, isComboFire }, ref) => (
+const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onClick, floaters }, ref) => (
   <div style={styles.petContainer}>
     <div
       ref={ref}
@@ -889,37 +857,18 @@ const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onC
         animation: isClicking ? 'pulse 0.3s ease-out' : 'none',
         transform: isClicking ? 'scale(1.05)' : 'scale(1)',
         transition: 'transform 0.2s, box-shadow 0.3s',
-        boxShadow: isComboFire ? '0 0 50px #ff4500, 0 0 100px #ff8c00' : '0 0 20px rgba(255,204,0,0.2)',
       }}
       onClick={onClick}
     >
       <div style={{ fontSize: '150px' }}>
         {emoji}
       </div>
-      {isComboFire && (
-        <>
-          <div style={styles.fireLeft} />
-          <div style={styles.fireRight} />
-          <div style={styles.fireTop} />
-        </>
-      )}
       {floaters.map((f) => (
         <div key={f.id} style={{ position: 'absolute', left: f.x, top: f.y, color: '#ffd700', fontWeight: 'bold', fontSize: '20px', pointerEvents: 'none', animation: 'floatUp 1s ease-out forwards' }}>
           +{f.value.toFixed(1)}
         </div>
       ))}
       {isClicking && <div style={styles.clickFlash} />}
-    </div>
-    <div style={styles.comboCounter}>
-      {combo > 0 && (
-        <span style={{ 
-          ...styles.comboText, 
-          color: isComboFire ? '#ff4500' : '#ffcc00',
-          animation: isComboFire ? 'flicker 0.5s infinite alternate' : 'none'
-        }}>
-          🔥 {combo}
-        </span>
-      )}
     </div>
   </div>
 ));
@@ -1242,7 +1191,7 @@ const Tutorial: React.FC<TutorialProps> = ({ onComplete }) => {
 // -------------------- Styles --------------------
 const styles = {
   container: { 
-    minHeight: '100vh', 
+    height: '100vh',
     background: '#000', 
     color: '#fff', 
     padding: '12px', 
@@ -1251,10 +1200,9 @@ const styles = {
     flexDirection: 'column' as const, 
     boxSizing: 'border-box' as const, 
     position: 'relative' as const,
-    overflowY: 'auto' as const,
   },
-  loadingContainer: { display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: '#000', color: '#fff' },
-  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' },
+  loadingContainer: { display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#000', color: '#fff' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' },
   profile: { display: 'flex', alignItems: 'center', gap: '6px' },
   avatar: { width: '36px', height: '36px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 'bold', border: '2px solid #666', cursor: 'pointer' },
   friendsBadge: { background: '#222', borderRadius: '20px', padding: '4px 8px', fontSize: '13px', cursor: 'pointer', border: '1px solid #444', display: 'flex', alignItems: 'center', gap: '4px' },
@@ -1265,30 +1213,30 @@ const styles = {
   nameInput: { background: '#222', border: '1px solid #444', borderRadius: '6px', padding: '4px 8px', color: '#fff', fontSize: '14px', outline: 'none' },
   nameSaveBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
   nameCancelBtn: { background: 'none', border: 'none', fontSize: '16px', cursor: 'pointer' },
-  content: { flex: 1, overflowY: 'visible' as const, marginBottom: '8px' },
-  stats: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginTop: '12px', marginBottom: '12px' },
+  content: { flex: 1, display: 'flex', flexDirection: 'column' as const, justifyContent: 'space-between' },
+  stats: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginTop: '8px', marginBottom: '8px' },
   statCard: {
     background: '#222',
-    borderRadius: '10px',
-    padding: '8px 4px',
+    borderRadius: '8px',
+    padding: '6px 2px',
     display: 'flex',
     flexDirection: 'column' as const,
     alignItems: 'center',
     border: '1px solid #444',
     boxShadow: '0 2px 4px rgba(0,0,0,0.3)',
   },
-  statValue: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00' },
-  statLabel: { fontSize: '10px', color: '#aaa', marginTop: '2px' },
-  barWrapper: { marginBottom: '8px' },
-  barLabel: { fontSize: '14px', fontWeight: 'bold', color: '#fff', marginBottom: '2px' },
-  barBg: { background: '#222', height: '20px', borderRadius: '8px', position: 'relative' as const, overflow: 'hidden' },
-  barFill: { height: '100%', borderRadius: '8px', transition: 'width 0.3s ease' },
-  barText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '20px', fontSize: '12px', color: '#000', fontWeight: 'bold' },
-  petContainer: { position: 'relative' as const, margin: '20px auto 150px', width: 'fit-content' }, // поднято выше
+  statValue: { fontSize: '15px', fontWeight: 'bold', color: '#ffcc00' },
+  statLabel: { fontSize: '9px', color: '#aaa', marginTop: '2px' },
+  barWrapper: { marginBottom: '6px' },
+  barLabel: { fontSize: '12px', fontWeight: 'bold', color: '#fff', marginBottom: '2px' },
+  barBg: { background: '#222', height: '16px', borderRadius: '6px', position: 'relative' as const, overflow: 'hidden' },
+  barFill: { height: '100%', borderRadius: '6px', transition: 'width 0.3s ease' },
+  barText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '16px', fontSize: '10px', color: '#000', fontWeight: 'bold' },
+  petContainer: { position: 'relative' as const, margin: '10px auto 10px', width: 'fit-content' },
   petCircle: {
     position: 'relative' as const,
-    width: '250px',
-    height: '230px',
+    width: '200px',
+    height: '180px',
     background: '#222',
     borderRadius: '50%',
     display: 'flex',
@@ -1310,116 +1258,65 @@ const styles = {
     animation: 'fadeOut 0.3s ease-out forwards',
     pointerEvents: 'none' as const,
   },
-  fireLeft: {
-    position: 'absolute' as const,
-    bottom: '-10px',
-    left: '-10px',
-    width: '50px',
-    height: '50px',
-    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
-    borderRadius: '50%',
-    filter: 'blur(6px)',
-    animation: 'flicker 0.5s infinite alternate',
-    pointerEvents: 'none' as const,
-  },
-  fireRight: {
-    position: 'absolute' as const,
-    bottom: '-10px',
-    right: '-10px',
-    width: '50px',
-    height: '50px',
-    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
-    borderRadius: '50%',
-    filter: 'blur(6px)',
-    animation: 'flicker 0.5s infinite alternate',
-    pointerEvents: 'none' as const,
-  },
-  fireTop: {
-    position: 'absolute' as const,
-    top: '-15px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    width: '70px',
-    height: '70px',
-    background: 'radial-gradient(circle, #ff8c00 0%, #ff4500 70%, transparent 100%)',
-    borderRadius: '50%',
-    filter: 'blur(8px)',
-    animation: 'flicker 0.5s infinite alternate',
-    pointerEvents: 'none' as const,
-  },
-  comboCounter: {
-    position: 'absolute' as const,
-    top: '-30px',
-    left: '20px', // смещение влево
-    fontSize: '20px',
-    fontWeight: 'bold',
-    textShadow: '0 0 8px currentColor',
-    whiteSpace: 'nowrap' as const,
-  },
-  comboText: {
-    fontSize: '28px',
-    fontWeight: 'bold',
-    transition: 'color 0.3s',
-  },
-  staminaWrapper: { marginTop: '20px', marginBottom: '8px' },
-  staminaLabel: { fontSize: '14px', fontWeight: 'bold', color: '#fff', marginBottom: '4px', textAlign: 'center' as const },
-  staminaBarContainer: { background: '#222', height: '20px', borderRadius: '10px', position: 'relative' as const, overflow: 'hidden', border: '1px solid #444' },
-  staminaBarFill: { background: '#ffcc00', height: '100%', borderRadius: '10px', transition: 'width 0.3s ease' },
-  staminaBarText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '20px', fontSize: '12px', color: '#000', fontWeight: 'bold' },
-  buttonsContainer: { marginTop: '15px' },
-  actionsRow: { display: 'flex', gap: '8px', marginBottom: '8px' },
-  button: { flex: 1, padding: '10px', border: 'none', borderRadius: '8px', fontSize: '14px', fontWeight: 'bold', cursor: 'pointer', transition: 'opacity 0.2s, transform 0.1s', touchAction: 'manipulation' },
+  staminaWrapper: { marginTop: '8px', marginBottom: '8px' },
+  staminaLabel: { fontSize: '12px', fontWeight: 'bold', color: '#fff', marginBottom: '4px', textAlign: 'center' as const },
+  staminaBarContainer: { background: '#222', height: '16px', borderRadius: '8px', position: 'relative' as const, overflow: 'hidden', border: '1px solid #444' },
+  staminaBarFill: { background: '#ffcc00', height: '100%', borderRadius: '8px', transition: 'width 0.3s ease' },
+  staminaBarText: { position: 'absolute' as const, top: 0, left: 0, width: '100%', textAlign: 'center' as const, lineHeight: '16px', fontSize: '10px', color: '#000', fontWeight: 'bold' },
+  buttonsContainer: { marginTop: '8px' },
+  actionsRow: { display: 'flex', gap: '6px', marginBottom: '6px' },
+  button: { flex: 1, padding: '8px', border: 'none', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', transition: 'opacity 0.2s, transform 0.1s', touchAction: 'manipulation' },
   feedButton: { background: '#666', color: '#fff' },
   playButton: { background: '#666', color: '#fff' },
   shopButton: { background: '#666', color: '#fff' },
   modalOverlay: { position: 'fixed' as const, top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
-  modalContent: { background: '#111', borderRadius: '20px', width: '90%', maxWidth: '380px', padding: '16px', border: '1px solid #333', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', transformOrigin: 'top', animation: 'slideIn 0.3s ease' },
-  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' },
-  modalTitle: { fontSize: '18px', fontWeight: 'bold', color: '#fff', margin: 0 },
-  closeButton: { background: 'none', border: 'none', color: '#aaa', fontSize: '22px', cursor: 'pointer' },
-  tabs: { display: 'flex', marginBottom: '12px', borderBottom: '1px solid #444' },
-  tabButton: { flex: 1, background: 'none', border: 'none', color: '#fff', padding: '8px', cursor: 'pointer', fontSize: '14px', borderBottom: '2px solid transparent' },
+  modalContent: { background: '#111', borderRadius: '20px', width: '90%', maxWidth: '350px', padding: '14px', border: '1px solid #333', boxShadow: '0 10px 30px rgba(0,0,0,0.5)', transformOrigin: 'top', animation: 'slideIn 0.3s ease' },
+  modalHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' },
+  modalTitle: { fontSize: '16px', fontWeight: 'bold', color: '#fff', margin: 0 },
+  closeButton: { background: 'none', border: 'none', color: '#aaa', fontSize: '20px', cursor: 'pointer' },
+  tabs: { display: 'flex', marginBottom: '10px', borderBottom: '1px solid #444' },
+  tabButton: { flex: 1, background: 'none', border: 'none', color: '#fff', padding: '6px', cursor: 'pointer', fontSize: '13px', borderBottom: '2px solid transparent' },
   activeTab: { borderBottom: '2px solid #ffcc00', color: '#ffcc00' },
 
   // Profile tab styles
-  profileContent: { display: 'flex', flexDirection: 'column' as const, gap: '16px' },
-  profileHeader: { display: 'flex', gap: '12px', alignItems: 'center' },
-  profileAvatarLarge: { width: '60px', height: '60px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '28px', fontWeight: 'bold', border: '2px solid #ffcc00' },
+  profileContent: { display: 'flex', flexDirection: 'column' as const, gap: '12px' },
+  profileHeader: { display: 'flex', gap: '10px', alignItems: 'center' },
+  profileAvatarLarge: { width: '50px', height: '50px', borderRadius: '50%', background: '#444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 'bold', border: '2px solid #ffcc00' },
   profileNames: { display: 'flex', flexDirection: 'column' as const, gap: '2px' },
-  profileName: { fontSize: '18px', fontWeight: 'bold', color: '#ffcc00' },
-  profileUsername: { fontSize: '12px', color: '#aaa' },
-  profileDays: { fontSize: '12px', color: '#888', display: 'flex', alignItems: 'center', gap: '4px' },
+  profileName: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00' },
+  profileUsername: { fontSize: '11px', color: '#aaa' },
+  profileDays: { fontSize: '11px', color: '#888', display: 'flex', alignItems: 'center', gap: '4px' },
 
-  statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginTop: '8px' },
-  statBox: { background: '#222', borderRadius: '10px', padding: '12px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid #444' },
-  statBoxValue: { fontSize: '20px', fontWeight: 'bold', color: '#ffcc00' },
-  statBoxLabel: { fontSize: '11px', color: '#aaa', marginTop: '2px' },
+  statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px', marginTop: '6px' },
+  statBox: { background: '#222', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid #444' },
+  statBoxValue: { fontSize: '18px', fontWeight: 'bold', color: '#ffcc00' },
+  statBoxLabel: { fontSize: '10px', color: '#aaa', marginTop: '2px' },
 
-  inviteButton: { background: '#ffcc00', color: '#000', border: 'none', borderRadius: '8px', padding: '12px', fontSize: '15px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '8px' },
+  inviteButton: { background: '#ffcc00', color: '#000', border: 'none', borderRadius: '6px', padding: '10px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '6px' },
 
-  leadersPlaceholder: { textAlign: 'center' as const, color: '#aaa', padding: '16px' },
+  leadersPlaceholder: { textAlign: 'center' as const, color: '#aaa', padding: '14px' },
 
   // Pets list styles
-  petsList: { display: 'flex', flexDirection: 'column' as const, gap: '6px' },
-  petItem: { display: 'flex', alignItems: 'center', background: '#222', borderRadius: '8px', padding: '8px', border: '1px solid #444', cursor: 'pointer' },
+  petsList: { display: 'flex', flexDirection: 'column' as const, gap: '4px' },
+  petItem: { display: 'flex', alignItems: 'center', background: '#222', borderRadius: '6px', padding: '6px', border: '1px solid #444', cursor: 'pointer' },
   petItemSelected: { border: '2px solid #ffcc00' },
   petItemLocked: { opacity: 0.5, cursor: 'not-allowed' },
-  petItemEmoji: { fontSize: '28px', marginRight: '10px' },
+  petItemEmoji: { fontSize: '24px', marginRight: '8px' },
   petItemInfo: { flex: 1 },
-  petItemName: { fontSize: '14px', fontWeight: 'bold' },
-  petItemCondition: { fontSize: '10px', color: '#aaa' },
-  petItemSelectedMark: { color: '#ffcc00', fontWeight: 'bold', fontSize: '16px', marginLeft: '6px' },
-  upgradeButton: { marginLeft: '6px', background: '#ffcc00', border: 'none', borderRadius: '4px', padding: '4px 6px', cursor: 'pointer', fontSize: '12px' },
+  petItemName: { fontSize: '12px', fontWeight: 'bold' },
+  petItemCondition: { fontSize: '9px', color: '#aaa' },
+  petItemSelectedMark: { color: '#ffcc00', fontWeight: 'bold', fontSize: '14px', marginLeft: '4px' },
+  upgradeButton: { marginLeft: '4px', background: '#ffcc00', border: 'none', borderRadius: '4px', padding: '3px 5px', cursor: 'pointer', fontSize: '10px' },
 
-  referralButton: { background: '#666', color: '#fff', border: 'none', borderRadius: '6px', padding: '8px', fontSize: '13px', cursor: 'pointer', width: '100%', marginTop: '8px' },
-  eventBanner: { background: '#ffcc00', color: '#000', padding: '8px', textAlign: 'center' as const, borderRadius: '8px', marginBottom: '8px', fontWeight: 'bold', fontSize: '13px' },
-  inviteLinkContainer: { display: 'flex', gap: '6px', marginBottom: '8px' },
-  inviteLinkInput: { flex: 1, background: '#222', border: '1px solid #444', borderRadius: '6px', padding: '6px', color: '#fff', fontSize: '11px', outline: 'none' },
-  copyButton: { background: '#444', border: 'none', borderRadius: '6px', padding: '6px 10px', color: '#fff', cursor: 'pointer', fontSize: '14px' },
-  shopSection: { marginBottom: '16px' },
-  shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#222', padding: '10px', borderRadius: '8px', marginBottom: '6px', cursor: 'pointer', border: '1px solid #444', fontSize: '13px' },
-  questItem: { background: '#222', padding: '8px', borderRadius: '8px', marginBottom: '6px', fontSize: '13px' },
-  tutorialBox: { background: '#111', padding: '24px', borderRadius: '20px', textAlign: 'center' as const, maxWidth: '280px' },
+  referralButton: { background: '#666', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px', fontSize: '11px', cursor: 'pointer', width: '100%', marginTop: '6px' },
+  eventBanner: { background: '#ffcc00', color: '#000', padding: '6px', textAlign: 'center' as const, borderRadius: '6px', marginBottom: '6px', fontWeight: 'bold', fontSize: '11px' },
+  inviteLinkContainer: { display: 'flex', gap: '4px', marginBottom: '6px' },
+  inviteLinkInput: { flex: 1, background: '#222', border: '1px solid #444', borderRadius: '4px', padding: '5px', color: '#fff', fontSize: '10px', outline: 'none' },
+  copyButton: { background: '#444', border: 'none', borderRadius: '4px', padding: '5px 8px', color: '#fff', cursor: 'pointer', fontSize: '12px' },
+  shopSection: { marginBottom: '12px' },
+  shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#222', padding: '8px', borderRadius: '6px', marginBottom: '4px', cursor: 'pointer', border: '1px solid #444', fontSize: '11px' },
+  questItem: { background: '#222', padding: '6px', borderRadius: '6px', marginBottom: '4px', fontSize: '11px' },
+  tutorialBox: { background: '#111', padding: '20px', borderRadius: '16px', textAlign: 'center' as const, maxWidth: '250px' },
 };
 
 // Global animations
@@ -1441,10 +1338,6 @@ styleSheet.textContent = `
 @keyframes fadeOut {
   from { opacity: 1; }
   to { opacity: 0; }
-}
-@keyframes flicker {
-  0% { opacity: 0.6; transform: scale(1); }
-  100% { opacity: 1; transform: scale(1.2); }
 }`;
 document.head.appendChild(styleSheet);
 
