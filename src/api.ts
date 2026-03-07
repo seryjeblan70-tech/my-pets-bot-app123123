@@ -1,4 +1,4 @@
-const API_BASE_URL = 'https://my-pet-game.bothost.ru'; // твой домен без слеша
+const API_BASE_URL = 'https://my-pet-appiii.bothost.ru'; // твой домен без слеша
 
 function getInitData(): string {
   return window.Telegram?.WebApp?.initData || '';
@@ -22,7 +22,7 @@ async function request(endpoint: string, method: string = 'POST', body?: any) {
 }
 
 export const api = {
-  init: () => request('/init'),
+    init: () => request('/init', 'POST'),
   click: () => request('/click'),
   feed: () => request('/feed'),
   play: () => request('/play'),
