@@ -50,6 +50,16 @@ interface SpecialEvent {
   data?: any;
 }
 
+interface Achievement {
+  id: string;
+  title: string;
+  description: string;
+  condition: (state: any) => boolean;
+  reward: number;
+  icon: string;
+  completed: boolean;
+}
+
 // -------------------- Constants --------------------
 const MAX_FOOD = 100;
 const BASE_CLICK_POWER = 1;
@@ -81,8 +91,18 @@ const SHOP_ITEMS: InventoryItem[] = [
   { id: 'costume', name: 'Костюм супергероя', description: 'Изменяет внешность питомца на 1 час', emoji: '🦸', quantity: 0, type: 'skin' },
 ];
 
+// -------------------- Toast Component (simple) --------------------
+interface ToastMessage {
+  id: number;
+  text: string;
+  type: 'success' | 'error' | 'info';
+}
+
+let toastId = 0;
+const toasts: ToastMessage[] = [];
+
 // -------------------- Custom Hooks --------------------
-// useLevel
+
 function useLevel(totalClicks: number) {
   const getThreshold = (lvl: number) => (lvl <= 8 ? 200 * lvl - 100 : 300 * lvl - 900);
   let level = 1;
@@ -95,7 +115,6 @@ function useLevel(totalClicks: number) {
   return { level, expInCurrent, expNeeded, percent };
 }
 
-// useDailyBonus
 function useDailyBonus() {
   const [daily, setDaily] = useState<DailyBonus>(() => {
     const saved = localStorage.getItem('dailyBonus');
@@ -129,7 +148,6 @@ function useDailyBonus() {
   return { daily, claimDaily };
 }
 
-// useQuests
 function useQuests(initial: Quest[]) {
   const [quests, setQuests] = useState<Quest[]>(() => {
     const saved = localStorage.getItem('quests');
@@ -170,7 +188,6 @@ function useQuests(initial: Quest[]) {
   return { quests, updateProgress, claimQuest };
 }
 
-// useInventory
 function useInventory() {
   const [inventory, setInventory] = useState<InventoryItem[]>(() => {
     const saved = localStorage.getItem('inventory');
@@ -189,10 +206,10 @@ function useInventory() {
     ));
   }, []);
 
-  const useItem = useCallback((itemId: string, effects: (effect: any) => void) => {
+  const useItem = useCallback((itemId: string, callback: (item: InventoryItem) => void) => {
     const item = inventory.find(i => i.id === itemId);
     if (!item || item.quantity <= 0) return false;
-    if (item.effect) effects(item.effect);
+    callback(item);
     removeItem(itemId, 1);
     return true;
   }, [inventory, removeItem]);
@@ -204,7 +221,6 @@ function useInventory() {
   return { inventory, addItem, removeItem, useItem };
 }
 
-// usePets
 function usePets(selectedPetId: string, setSelectedPetId: (id: string) => void, level: number, friendsCount: number, eventActive: boolean) {
   const [petLevels, setPetLevels] = useState<Record<string, number>>(() => {
     const saved = localStorage.getItem('petLevels');
@@ -250,7 +266,6 @@ function usePets(selectedPetId: string, setSelectedPetId: (id: string) => void, 
   return { petLevels, isPetUnlocked, upgradePet, getCurrentPetBonus, getCurrentPetBonusType };
 }
 
-// useSpecialEvent
 function useSpecialEvent() {
   const [event, setEvent] = useState<SpecialEvent | null>(null);
 
@@ -271,7 +286,6 @@ function useSpecialEvent() {
   return { specialEvent: event, setSpecialEvent: setEvent };
 }
 
-// useResources
 function useResources() {
   const [food, setFood] = useState<number | null>(null);
   const [gems, setGems] = useState<number | null>(null);
@@ -328,6 +342,47 @@ function useResources() {
   };
 }
 
+// Достижения
+function useAchievements() {
+  const [achievements, setAchievements] = useState<Achievement[]>(() => {
+    const saved = localStorage.getItem('achievements');
+    return saved ? JSON.parse(saved) : [
+      { id: 'ach1', title: 'Новичок', description: 'Сделайте 100 кликов', condition: (s: any) => s.totalClicks >= 100, reward: 50, icon: '🎯', completed: false },
+      { id: 'ach2', title: 'Заводчик', description: 'Разблокируйте 3 питомцев', condition: (s: any) => Object.keys(s.petLevels).filter(id => id !== 'dog' && id !== 'cat' && id !== 'rabbit').length >= 3, reward: 100, icon: '🐕', completed: false },
+      { id: 'ach3', title: 'Энерджайзер', description: 'Восстановите 1000 энергии', condition: (s: any) => s.totalStaminaRestored >= 1000, reward: 80, icon: '⚡', completed: false },
+      { id: 'ach4', title: 'Миллионер', description: 'Накопите 1000 алмазов', condition: (s: any) => s.gems >= 1000, reward: 200, icon: '💎', completed: false },
+      { id: 'ach5', title: 'Друг человека', description: 'Пригласите 5 друзей', condition: (s: any) => s.friendsCount >= 5, reward: 150, icon: '👥', completed: false },
+      { id: 'ach6', title: 'Любитель бустеров', description: 'Используйте 10 бустеров', condition: (s: any) => s.boostersUsed >= 10, reward: 120, icon: '🚀', completed: false },
+      { id: 'ach7', title: 'Гурман', description: 'Съешьте 50 еды', condition: (s: any) => s.foodEaten >= 50, reward: 70, icon: '🍖', completed: false },
+      { id: 'ach8', title: 'Исследователь', description: 'Откройте все виды питомцев', condition: (s: any) => PETS.every(pet => s.isPetUnlocked(pet)), reward: 300, icon: '🔓', completed: false },
+      { id: 'ach9', title: 'Комбобой', description: 'Сделайте 50 кликов подряд', condition: (s: any) => s.maxCombo >= 50, reward: 100, icon: '🔥', completed: false },
+      { id: 'ach10', title: 'Ветеран', description: 'Играйте 30 дней', condition: (s: any) => s.daysInGame >= 30, reward: 500, icon: '🏆', completed: false },
+    ];
+  });
+
+  const checkAchievements = useCallback((state: any, addGems: (amt: number) => void) => {
+    let updated = false;
+    setAchievements(prev => prev.map(ach => {
+      if (!ach.completed && ach.condition(state)) {
+        addGems(ach.reward);
+        updated = true;
+        return { ...ach, completed: true };
+      }
+      return ach;
+    }));
+    if (updated) {
+      // Сохраняем
+      localStorage.setItem('achievements', JSON.stringify(achievements));
+    }
+  }, [achievements]);
+
+  useEffect(() => {
+    localStorage.setItem('achievements', JSON.stringify(achievements));
+  }, [achievements]);
+
+  return { achievements, checkAchievements };
+}
+
 // -------------------- Main App --------------------
 function App() {
   const {
@@ -351,6 +406,15 @@ function App() {
   const [eventActive, setEventActive] = useState(false);
   const [eventTimeLeft, setEventTimeLeft] = useState('');
   const { specialEvent, setSpecialEvent } = useSpecialEvent();
+  const { achievements, checkAchievements } = useAchievements();
+
+  // Дополнительные счетчики для достижений
+  const [totalStaminaRestored, setTotalStaminaRestored] = useState<number>(0);
+  const [boostersUsed, setBoostersUsed] = useState<number>(0);
+  const [foodEaten, setFoodEaten] = useState<number>(0);
+  const [maxCombo, setMaxCombo] = useState<number>(0);
+  const [combo, setCombo] = useState<number>(0);
+  const comboTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const [firstLoginDate, setFirstLoginDate] = useState<string>(() => {
     const saved = localStorage.getItem('firstLoginDate');
@@ -411,10 +475,11 @@ function App() {
   const [showQuests, setShowQuests] = useState(false);
   const [showInventory, setShowInventory] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [activeProfileTab, setActiveProfileTab] = useState<'profile' | 'leaders' | 'pets'>('profile');
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [activeProfileTab, setActiveProfileTab] = useState<'profile' | 'leaders' | 'pets' | 'achievements'>('profile');
 
   const [isClicking, setIsClicking] = useState(false);
-  const [floaters, setFloaters] = useState<Array<{ id: number; value: number; x: number; y: number }>>([]);
+  const [floaters, setFloaters] = useState<Array<{ id: number; value: number; x: number; y: number; emoji?: string }>>([]);
   const petRef = useRef<HTMLDivElement>(null);
 
   const [petName, setPetName] = useState<string>('Мой AI-питомец');
@@ -422,7 +487,22 @@ function App() {
   const [tempName, setTempName] = useState(petName);
 
   const lastClickTime = useRef(0);
-  const playSound = useCallback((type: 'click' | 'feed' | 'buy') => {}, []);
+  const [gemsFlash, setGemsFlash] = useState(false);
+
+  // Система уведомлений
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const showToast = useCallback((text: string, type: 'success' | 'error' | 'info' = 'info') => {
+    const id = Date.now() + Math.random();
+    setToasts(prev => [...prev, { id, text, type }]);
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id));
+    }, 3000);
+  }, []);
+
+  // Вибрация
+  const vibrate = useCallback((pattern: number | number[] = 50) => {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  }, []);
 
   const closeAllModals = () => {
     setShowProfileMenu(false);
@@ -431,6 +511,7 @@ function App() {
     setShowQuests(false);
     setShowInventory(false);
     setShowShop(false);
+    setShowAchievements(false);
   };
 
   const handleOpenProfile = () => {
@@ -441,6 +522,11 @@ function App() {
   const handleOpenInvite = () => {
     closeAllModals();
     setShowInviteMenu(true);
+  };
+
+  const handleOpenAchievements = () => {
+    closeAllModals();
+    setShowAchievements(true);
   };
 
   useEffect(() => {
@@ -489,6 +575,25 @@ function App() {
     return () => clearTimeout(timer);
   }, [floaters]);
 
+  // Combo
+  const resetCombo = useCallback(() => {
+    setCombo(0);
+    if (comboTimeoutRef.current) {
+      clearTimeout(comboTimeoutRef.current);
+      comboTimeoutRef.current = null;
+    }
+  }, []);
+
+  const incrementCombo = useCallback(() => {
+    setCombo(prev => {
+      const newCombo = prev + 1;
+      if (newCombo > maxCombo) setMaxCombo(newCombo);
+      return newCombo;
+    });
+    if (comboTimeoutRef.current) clearTimeout(comboTimeoutRef.current);
+    comboTimeoutRef.current = setTimeout(resetCombo, 2000);
+  }, [maxCombo, resetCombo]);
+
   const sendAction = (action: string, payload: any = {}) => {
     if (tg) tg.sendData(JSON.stringify({ action, ...payload }));
   };
@@ -500,10 +605,12 @@ function App() {
 
     if (gems === null) return;
     if (stamina < 1) {
-      alert('Нет сил! Подожди, энергия восстановится.');
+      showToast('Нет сил! Подожди, энергия восстановится.', 'error');
+      vibrate([50, 100, 50]);
       return;
     }
 
+    incrementCombo();
     setIsClicking(true);
     setTimeout(() => setIsClicking(false), 300);
 
@@ -511,76 +618,129 @@ function App() {
     if (specialEvent?.active && specialEvent.type === 'doubleRewards') gain *= 2;
 
     setGems(g => g! + gain);
+    setGemsFlash(true);
+    setTimeout(() => setGemsFlash(false), 300);
     setStamina(prev => Math.max(prev - 1, 0));
     setTotalClicks(prev => prev + 1);
-    updateProgress('click', gain);
+    updateProgress('click', 1);
 
+    // Партиклы
     if (petRef.current) {
       const rect = petRef.current.getBoundingClientRect();
-      const x = Math.random() * rect.width * 0.8 + rect.width * 0.1;
-      const y = Math.random() * rect.height * 0.5 + rect.height * 0.2;
-      setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: gain, x, y }]);
+      for (let i = 0; i < 3; i++) {
+        const x = Math.random() * rect.width * 0.8 + rect.width * 0.1;
+        const y = Math.random() * rect.height * 0.5 + rect.height * 0.2;
+        const emoji = Math.random() > 0.5 ? '✨' : '💎';
+        setFloaters(prev => [...prev, { id: Date.now() + Math.random(), value: gain, x, y, emoji }]);
+      }
     }
 
-    playSound('click');
+    vibrate(30);
     sendAction('click', { power: gain });
+
+    // Проверка достижений
+    const state = { totalClicks: totalClicks + 1, petLevels, friendsCount, gems: gems! + gain, totalStaminaRestored, boostersUsed, foodEaten, maxCombo: maxCombo > combo ? maxCombo : combo, daysInGame, isPetUnlocked };
+    checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
   const handleFeed = () => {
-    if (food === null) return alert('Данные о еде загружаются');
-    if (food <= 0) return alert('Нет еды! Купи в магазине.');
+    if (food === null) return showToast('Данные о еде загружаются', 'error');
+    if (food <= 0) return showToast('Нет еды! Купи в магазине.', 'error');
     setFood(prev => Math.max((prev ?? 0) - 1, 0));
+    const restore = Math.min(10, maxStamina - stamina);
     setStamina(prev => Math.min(prev + 10, maxStamina));
+    setTotalStaminaRestored(prev => prev + restore);
+    setFoodEaten(prev => prev + 1);
     updateProgress('feed', 1);
-    playSound('feed');
-    alert('Питомец накормлен! +10 энергии');
+    showToast('Питомец накормлен! +10 энергии', 'success');
+    vibrate(30);
     sendAction('feed');
+    const state = { totalClicks, petLevels, friendsCount, gems: gems!, totalStaminaRestored: totalStaminaRestored + restore, boostersUsed, foodEaten: foodEaten + 1, maxCombo, daysInGame, isPetUnlocked };
+    checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
   const handlePlay = () => {
-    if (stamina < 20) return alert('Недостаточно энергии для игры!');
+    if (stamina < 20) return showToast('Недостаточно энергии для игры!', 'error');
     setStamina(prev => prev - 20);
     let reward = 30;
     if (specialEvent?.active && specialEvent.type === 'doubleRewards') reward *= 2;
     setGems(prev => (prev ?? 0) + reward);
+    setGemsFlash(true);
+    setTimeout(() => setGemsFlash(false), 300);
     updateProgress('play', 1);
-    alert(`Поиграли! +${reward} алмазов`);
+    showToast(`Поиграли! +${reward} алмазов`, 'success');
+    vibrate(50);
     sendAction('play');
+    const state = { totalClicks, petLevels, friendsCount, gems: gems! + reward, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
+    checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
   const copyInviteLink = () => {
     navigator.clipboard.writeText(inviteLink);
-    alert('✅ Ссылка скопирована!');
+    showToast('✅ Ссылка скопирована!', 'success');
     setFriendsCount(prev => prev + 1);
     updateProgress('invite', 1);
     setGems(prev => (prev ?? 0) + 50);
+    setGemsFlash(true);
+    setTimeout(() => setGemsFlash(false), 300);
+    vibrate(100);
+    const state = { totalClicks, petLevels, friendsCount: friendsCount + 1, gems: gems! + 50, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
+    checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
   const buyItem = (item: InventoryItem, price: number) => {
     if (gems === null) return;
-    if (gems < price) return alert('Не хватает алмазов!');
+    if (gems < price) return showToast('Не хватает алмазов!', 'error');
     setGems(prev => prev! - price);
     addItem(item.id, 1);
     updateProgress('upgrade', 1);
-    playSound('buy');
+    showToast(`Куплено: ${item.name}`, 'success');
+    vibrate(30);
     sendAction('buyItem', { itemId: item.id, price });
+    const state = { totalClicks, petLevels, friendsCount, gems: gems! - price, totalStaminaRestored, boostersUsed, foodEaten, maxCombo, daysInGame, isPetUnlocked };
+    checkAchievements(state, (amt) => setGems(prev => prev! + amt));
   };
 
+  const [boostActive, setBoostActive] = useState(false);
+  const [boostTimeLeft, setBoostTimeLeft] = useState(0);
+  const originalClickPowerRef = useRef(clickPower);
+
   const handleUseItem = (item: InventoryItem) => {
-    useItem(item.id, (effect) => {
-      if (effect.type === 'doubleClick') {
+    useItem(item.id, (usedItem) => {
+      if (usedItem.type === 'boost' && usedItem.effect?.type === 'doubleClick') {
+        if (boostActive) {
+          showToast('Бустер уже активен!', 'error');
+          return;
+        }
+        setBoostActive(true);
+        setBoostTimeLeft(usedItem.effect.duration);
+        originalClickPowerRef.current = clickPower;
         setClickPower(prev => prev * 2);
-        setTimeout(() => setClickPower(prev => prev / 2), effect.duration * 1000);
-        alert(`Бустер активирован на ${effect.duration} сек!`);
-      } else if (item.type === 'food') {
+        const interval = setInterval(() => {
+          setBoostTimeLeft(prev => {
+            if (prev <= 1) {
+              clearInterval(interval);
+              setBoostActive(false);
+              setClickPower(originalClickPowerRef.current);
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+        setBoostersUsed(prev => prev + 1);
+        showToast(`Бустер активирован на ${usedItem.effect.duration} сек!`, 'success');
+        vibrate(100);
+      } else if (usedItem.type === 'food') {
         setFood(prev => Math.min((prev ?? 0) + 30, MAX_FOOD));
-      } else if (item.type === 'skin') {
-        alert('Скин надет!');
+        setFoodEaten(prev => prev + 1);
+        showToast('+30 еды!', 'success');
+        vibrate(30);
+      } else if (usedItem.type === 'skin') {
+        showToast('Скин надет! (функция в разработке)', 'info');
       }
     });
   };
 
-  // Форматирование бонуса для отображения
   const bonusDisplay = useMemo(() => {
     const bonus = getCurrentPetBonus();
     const type = getCurrentPetBonusType();
@@ -632,6 +792,7 @@ function App() {
           expPercent={expPercent}
           gems={gems ?? 0}
           clickPower={totalClickPower}
+          gemsFlash={gemsFlash}
         />
 
         <Pet
@@ -653,6 +814,11 @@ function App() {
               🐾 Бонус: {bonusDisplay}
             </div>
           )}
+          {boostActive && (
+            <div style={styles.boostIndicator}>
+              🚀 Бустер: {boostTimeLeft}с
+            </div>
+          )}
         </div>
       </div>
 
@@ -663,12 +829,20 @@ function App() {
         onDaily={() => { closeAllModals(); setShowDailyBonus(true); }}
         onQuests={() => { closeAllModals(); setShowQuests(true); }}
         onInventory={() => { closeAllModals(); setShowInventory(true); }}
+        onAchievements={handleOpenAchievements}
       />
 
+      {/* Модальные окна */}
       {showDailyBonus && (
         <DailyBonusModal
           daily={daily}
-          onClaim={() => claimDaily((amt) => setGems(g => (g ?? 0) + amt))}
+          onClaim={() => claimDaily((amt) => {
+            setGems(g => (g ?? 0) + amt);
+            setGemsFlash(true);
+            setTimeout(() => setGemsFlash(false), 300);
+            showToast(`Получено ${amt} алмазов!`, 'success');
+            vibrate(100);
+          })}
           onClose={() => setShowDailyBonus(false)}
         />
       )}
@@ -676,7 +850,13 @@ function App() {
       {showQuests && (
         <QuestsModal
           quests={quests}
-          onClaim={(id) => claimQuest(id, (amt) => setGems(g => (g ?? 0) + amt))}
+          onClaim={(id) => claimQuest(id, (amt) => {
+            setGems(g => (g ?? 0) + amt);
+            setGemsFlash(true);
+            setTimeout(() => setGemsFlash(false), 300);
+            showToast(`Награда ${amt} алмазов!`, 'success');
+            vibrate(100);
+          })}
           onClose={() => setShowQuests(false)}
         />
       )}
@@ -700,28 +880,34 @@ function App() {
           maxStamina={maxStamina}
           onBuyClickUpgrade={() => {
             const cost = 10 + clickUpgradeLevel * 5;
-            if (gems! < cost) return alert('Не хватает алмазов');
+            if (gems! < cost) return showToast('Не хватает алмазов', 'error');
             setGems(g => g! - cost);
             setClickUpgradeLevel(l => l + 1);
             setClickPower(p => p + 0.2);
             updateProgress('upgrade', 1);
+            showToast('Улучшение куплено!', 'success');
+            vibrate(50);
           }}
           onBuyRegenUpgrade={() => {
             const cost = 15 + regenUpgradeLevel * 8;
-            if (gems! < cost) return alert('Не хватает алмазов');
+            if (gems! < cost) return showToast('Не хватает алмазов', 'error');
             setGems(g => g! - cost);
             setRegenUpgradeLevel(l => l + 1);
             setStaminaRegenRate(r => r + 0.5);
             updateProgress('upgrade', 1);
+            showToast('Улучшение куплено!', 'success');
+            vibrate(50);
           }}
           onBuyMaxStaminaUpgrade={() => {
             const cost = 30 + maxStaminaUpgradeLevel * 10;
-            if (gems! < cost) return alert('Не хватает алмазов');
+            if (gems! < cost) return showToast('Не хватает алмазов', 'error');
             setGems(g => g! - cost);
             setMaxStaminaUpgradeLevel(l => l + 1);
             setMaxStamina(prev => prev + 20);
             setStamina(prev => prev + 20);
             updateProgress('upgrade', 1);
+            showToast('Улучшение куплено!', 'success');
+            vibrate(50);
           }}
           onBuyItem={buyItem}
           shopItems={SHOP_ITEMS}
@@ -752,14 +938,26 @@ function App() {
           gems={gems ?? 0}
           daysInGame={daysInGame}
           onInvite={handleOpenInvite}
+          onAchievements={handleOpenAchievements}
           leaders={[]}
           pets={PETS}
           isPetUnlocked={isPetUnlocked}
           selectedPetId={selectedPetId}
           onSelectPet={(id) => { setSelectedPetId(id); localStorage.setItem('selectedPet', id); }}
           petLevels={petLevels}
-          onUpgradePet={(petId) => upgradePet(petId, gems!, (newGems) => setGems(newGems))}
+          onUpgradePet={(petId) => upgradePet(petId, gems!, (newGems) => {
+            setGems(newGems);
+            showToast('Питомец улучшен!', 'success');
+            vibrate(100);
+          })}
           onClose={() => setShowProfileMenu(false)}
+        />
+      )}
+
+      {showAchievements && (
+        <AchievementsModal
+          achievements={achievements}
+          onClose={() => setShowAchievements(false)}
         />
       )}
 
@@ -771,11 +969,21 @@ function App() {
           }}
         />
       )}
+
+      {/* Toast уведомления */}
+      <div style={styles.toastContainer}>
+        {toasts.map(toast => (
+          <div key={toast.id} style={{...styles.toast, ...(toast.type === 'success' ? styles.toastSuccess : toast.type === 'error' ? styles.toastError : styles.toastInfo)}}>
+            {toast.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 // -------------------- Component Definitions --------------------
+// (все компоненты с улучшенными стилями и новыми пропсами)
 
 interface HeaderProps {
   userAvatar: string;
@@ -824,10 +1032,11 @@ interface StatsBarsProps {
   expPercent: number;
   gems: number;
   clickPower: number;
+  gemsFlash?: boolean;
 }
 
 const StatsBars: React.FC<StatsBarsProps> = ({
-  food, maxFood, level, expInCurrent, expNeeded, expPercent, gems, clickPower
+  food, maxFood, level, expInCurrent, expNeeded, expPercent, gems, clickPower, gemsFlash
 }) => (
   <>
     <div style={styles.stats}>
@@ -839,7 +1048,7 @@ const StatsBars: React.FC<StatsBarsProps> = ({
         <span style={styles.statValue}>{food}</span>
         <span style={styles.statLabel}>🍖 Еда</span>
       </div>
-      <div style={styles.statCard}>
+      <div style={{...styles.statCard, animation: gemsFlash ? 'flash 0.3s ease-out' : 'none'}}>
         <span style={styles.statValue}>{gems.toFixed(1)}</span>
         <span style={styles.statLabel}>💎 Алмазы</span>
       </div>
@@ -869,7 +1078,7 @@ interface PetProps {
   emoji: string;
   isClicking: boolean;
   onClick: (e: React.MouseEvent<HTMLDivElement>) => void;
-  floaters: Array<{ id: number; value: number; x: number; y: number }>;
+  floaters: Array<{ id: number; value: number; x: number; y: number; emoji?: string }>;
 }
 
 const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onClick, floaters }, ref) => (
@@ -878,7 +1087,7 @@ const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onC
       ref={ref}
       style={{
         ...styles.petCircle,
-        animation: isClicking ? 'pulse 0.3s ease-out' : 'none',
+        animation: isClicking ? 'pulse 0.3s ease-out, shake 0.3s ease-out' : 'none',
         transform: isClicking ? 'scale(1.05)' : 'scale(1)',
         transition: 'transform 0.2s, box-shadow 0.3s',
       }}
@@ -889,7 +1098,7 @@ const Pet = React.forwardRef<HTMLDivElement, PetProps>(({ emoji, isClicking, onC
       </div>
       {floaters.map((f) => (
         <div key={f.id} style={{ position: 'absolute', left: f.x, top: f.y, color: '#ffd700', fontWeight: 'bold', fontSize: '20px', pointerEvents: 'none', animation: 'floatUp 1s ease-out forwards' }}>
-          +{f.value.toFixed(1)}
+          {f.emoji || '+' + f.value.toFixed(1)}
         </div>
       ))}
       {isClicking && <div style={styles.clickFlash} />}
@@ -904,9 +1113,10 @@ interface ActionButtonsProps {
   onDaily: () => void;
   onQuests: () => void;
   onInventory: () => void;
+  onAchievements: () => void;
 }
 
-const ActionButtons: React.FC<ActionButtonsProps> = ({ onFeed, onPlay, onShop, onDaily, onQuests, onInventory }) => (
+const ActionButtons: React.FC<ActionButtonsProps> = ({ onFeed, onPlay, onShop, onDaily, onQuests, onInventory, onAchievements }) => (
   <div style={styles.buttonsContainer}>
     <div style={styles.actionsRow}>
       <button style={{ ...styles.button, ...styles.feedButton }} onClick={onFeed}>🍖 Покормить</button>
@@ -916,10 +1126,13 @@ const ActionButtons: React.FC<ActionButtonsProps> = ({ onFeed, onPlay, onShop, o
     <div style={styles.actionsRow}>
       <button style={{ ...styles.button, ...styles.shopButton }} onClick={onQuests}>📋 Задания</button>
       <button style={{ ...styles.button, ...styles.shopButton }} onClick={onInventory}>🎒 Инвентарь</button>
+      <button style={{ ...styles.button, ...styles.shopButton }} onClick={onAchievements}>🏆 Достижения</button>
       <button style={{ ...styles.button, ...styles.shopButton }} onClick={onShop}>🛒 Магазин</button>
     </div>
   </div>
 );
+
+// Модальные окна (сокращены для экономии места, но в реальном файле они должны быть полными)
 
 interface DailyBonusModalProps {
   daily: DailyBonus;
@@ -1066,8 +1279,8 @@ const InviteModal: React.FC<InviteModalProps> = ({ inviteLink, onCopy, onClose }
 );
 
 interface ProfileModalProps {
-  activeTab: 'profile' | 'leaders' | 'pets';
-  setActiveTab: (tab: 'profile' | 'leaders' | 'pets') => void;
+  activeTab: 'profile' | 'leaders' | 'pets' | 'achievements';
+  setActiveTab: (tab: 'profile' | 'leaders' | 'pets' | 'achievements') => void;
   userAvatar: string;
   user?: any;
   friendsCount: number;
@@ -1076,6 +1289,7 @@ interface ProfileModalProps {
   gems: number;
   daysInGame: number;
   onInvite: () => void;
+  onAchievements: () => void;
   leaders: any[];
   pets: Pet[];
   isPetUnlocked: (pet: Pet) => boolean;
@@ -1088,7 +1302,7 @@ interface ProfileModalProps {
 
 const ProfileModal: React.FC<ProfileModalProps> = ({
   activeTab, setActiveTab, userAvatar, user, friendsCount, totalClicks, level, gems,
-  daysInGame, onInvite, leaders, pets, isPetUnlocked, selectedPetId, onSelectPet, petLevels, onUpgradePet, onClose
+  daysInGame, onInvite, onAchievements, leaders, pets, isPetUnlocked, selectedPetId, onSelectPet, petLevels, onUpgradePet, onClose
 }) => (
   <div style={styles.modalOverlay} onClick={onClose}>
     <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
@@ -1101,6 +1315,7 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
         <button style={{ ...styles.tabButton, ...(activeTab === 'profile' ? styles.activeTab : {}) }} onClick={() => setActiveTab('profile')}>Профиль</button>
         <button style={{ ...styles.tabButton, ...(activeTab === 'leaders' ? styles.activeTab : {}) }} onClick={() => setActiveTab('leaders')}>Лидеры</button>
         <button style={{ ...styles.tabButton, ...(activeTab === 'pets' ? styles.activeTab : {}) }} onClick={() => setActiveTab('pets')}>Питомцы</button>
+        <button style={{ ...styles.tabButton, ...(activeTab === 'achievements' ? styles.activeTab : {}) }} onClick={() => { setActiveTab('achievements'); onAchievements(); }}>🏆</button>
       </div>
 
       {activeTab === 'profile' && (
@@ -1128,7 +1343,7 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
               <span style={styles.statBoxLabel}>Уровень</span>
             </div>
             <div style={styles.statBox}>
-              <span style={styles.statBoxValue}>{typeof gems === 'number' ? gems.toFixed(1) : gems}</span>
+              <span style={styles.statBoxValue}>{gems.toFixed(1)}</span>
               <span style={styles.statBoxLabel}>Алмазы</span>
             </div>
           </div>
@@ -1180,6 +1395,38 @@ const ProfileModal: React.FC<ProfileModalProps> = ({
           })}
         </div>
       )}
+
+      {activeTab === 'achievements' && (
+        <div>Переход к достижениям...</div>
+      )}
+    </div>
+  </div>
+);
+
+interface AchievementsModalProps {
+  achievements: Achievement[];
+  onClose: () => void;
+}
+
+const AchievementsModal: React.FC<AchievementsModalProps> = ({ achievements, onClose }) => (
+  <div style={styles.modalOverlay} onClick={onClose}>
+    <div style={{...styles.modalContent, animation: 'slideIn 0.3s ease'}} onClick={e => e.stopPropagation()}>
+      <div style={styles.modalHeader}>
+        <h3 style={styles.modalTitle}>🏆 Достижения</h3>
+        <button style={styles.closeButton} onClick={onClose}>✕</button>
+      </div>
+      <div style={styles.achievementsList}>
+        {achievements.map(ach => (
+          <div key={ach.id} style={{...styles.achievementItem, opacity: ach.completed ? 1 : 0.6}}>
+            <span style={styles.achievementIcon}>{ach.icon}</span>
+            <div style={styles.achievementInfo}>
+              <div style={styles.achievementTitle}>{ach.title}</div>
+              <div style={styles.achievementDesc}>{ach.description}</div>
+              {ach.completed && <span style={styles.achievementReward}>+{ach.reward} 💎</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   </div>
 );
@@ -1196,6 +1443,7 @@ const Tutorial: React.FC<TutorialProps> = ({ onComplete }) => {
     'Играй с питомцем, чтобы получить больше алмазов.',
     'Заходи в магазин, чтобы улучшать характеристики.',
     'Приглашай друзей и получай бонусы!',
+    'Открывай достижения за особые успехи!',
   ];
   return (
     <div style={styles.modalOverlay}>
@@ -1213,7 +1461,7 @@ const Tutorial: React.FC<TutorialProps> = ({ onComplete }) => {
 };
 
 // -------------------- Styles --------------------
-const styles = {
+const styles: Record<string, React.CSSProperties> = {
   container: { 
     height: '100vh',
     background: 'linear-gradient(145deg, #0f1215 0%, #1a1e2a 100%)',
@@ -1306,6 +1554,20 @@ const styles = {
     marginLeft: 'auto',
     marginRight: 'auto',
   },
+  boostIndicator: {
+    marginTop: '6px',
+    fontSize: '11px',
+    color: '#00aaff',
+    textAlign: 'center' as const,
+    background: 'rgba(0,0,0,0.3)',
+    padding: '4px 8px',
+    borderRadius: '20px',
+    backdropFilter: 'blur(4px)',
+    display: 'inline-block',
+    width: 'fit-content',
+    marginLeft: 'auto',
+    marginRight: 'auto',
+  },
   buttonsContainer: { marginTop: '0px' },
   actionsRow: { display: 'flex', gap: '6px', marginBottom: '6px' },
   button: { flex: 1, padding: '10px', border: 'none', borderRadius: '12px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s', touchAction: 'manipulation', boxShadow: '0 4px 8px rgba(0,0,0,0.3)', background: 'linear-gradient(145deg, #ffcc00, #ffaa00)', color: '#000', textShadow: '0 1px 2px rgba(255,255,255,0.3)' },
@@ -1320,8 +1582,6 @@ const styles = {
   tabs: { display: 'flex', marginBottom: '10px', borderBottom: '1px solid #444' },
   tabButton: { flex: 1, background: 'none', border: 'none', color: '#fff', padding: '6px', cursor: 'pointer', fontSize: '13px', borderBottom: '2px solid transparent' },
   activeTab: { borderBottom: '2px solid #ffcc00', color: '#ffcc00' },
-
-  // Profile tab styles
   profileContent: { display: 'flex', flexDirection: 'column' as const, gap: '12px' },
   profileHeader: { display: 'flex', gap: '10px', alignItems: 'center' },
   profileAvatarLarge: { width: '50px', height: '50px', borderRadius: '50%', background: 'linear-gradient(135deg, #ffcc00, #ff8800)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px', fontWeight: 'bold', border: '2px solid #ffcc00', boxShadow: '0 0 20px rgba(255,204,0,0.5)' },
@@ -1329,17 +1589,12 @@ const styles = {
   profileName: { fontSize: '16px', fontWeight: 'bold', color: '#ffcc00' },
   profileUsername: { fontSize: '11px', color: '#aaa' },
   profileDays: { fontSize: '11px', color: '#888', display: 'flex', alignItems: 'center', gap: '4px' },
-
   statsGrid: { display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px', marginTop: '6px' },
   statBox: { background: 'rgba(30,35,45,0.7)', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column' as const, alignItems: 'center', border: '1px solid rgba(255,255,255,0.1)' },
   statBoxValue: { fontSize: '18px', fontWeight: 'bold', color: '#ffcc00' },
   statBoxLabel: { fontSize: '10px', color: '#aaa', marginTop: '2px' },
-
   inviteButton: { background: 'linear-gradient(145deg, #ffcc00, #ffaa00)', color: '#000', border: 'none', borderRadius: '6px', padding: '10px', fontSize: '13px', fontWeight: 'bold', cursor: 'pointer', width: '100%', marginTop: '6px', boxShadow: '0 4px 8px rgba(0,0,0,0.3)' },
-
   leadersPlaceholder: { textAlign: 'center' as const, color: '#aaa', padding: '14px' },
-
-  // Pets list styles
   petsList: { display: 'flex', flexDirection: 'column' as const, gap: '4px' },
   petItem: { display: 'flex', alignItems: 'center', background: 'rgba(30,35,45,0.7)', borderRadius: '6px', padding: '6px', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer' },
   petItemSelected: { border: '2px solid #ffcc00' },
@@ -1350,7 +1605,6 @@ const styles = {
   petItemCondition: { fontSize: '9px', color: '#aaa' },
   petItemSelectedMark: { color: '#ffcc00', fontWeight: 'bold', fontSize: '14px', marginLeft: '4px' },
   upgradeButton: { marginLeft: '4px', background: '#ffcc00', border: 'none', borderRadius: '4px', padding: '3px 5px', cursor: 'pointer', fontSize: '10px' },
-
   referralButton: { background: 'linear-gradient(145deg, #666, #444)', color: '#fff', border: 'none', borderRadius: '4px', padding: '6px', fontSize: '11px', cursor: 'pointer', width: '100%', marginTop: '6px' },
   eventBanner: { background: 'linear-gradient(90deg, #ffcc00, #ffaa00)', color: '#000', padding: '6px', textAlign: 'center' as const, borderRadius: '6px', marginBottom: '6px', fontWeight: 'bold', fontSize: '11px', boxShadow: '0 4px 8px rgba(0,0,0,0.3)' },
   inviteLinkContainer: { display: 'flex', gap: '4px', marginBottom: '6px' },
@@ -1360,6 +1614,18 @@ const styles = {
   shopItem: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(30,35,45,0.7)', padding: '8px', borderRadius: '6px', marginBottom: '4px', cursor: 'pointer', border: '1px solid rgba(255,255,255,0.1)', fontSize: '11px' },
   questItem: { background: 'rgba(30,35,45,0.7)', padding: '6px', borderRadius: '6px', marginBottom: '4px', fontSize: '11px' },
   tutorialBox: { background: '#111', padding: '20px', borderRadius: '16px', textAlign: 'center' as const, maxWidth: '250px' },
+  toastContainer: { position: 'fixed' as const, top: '20px', left: '50%', transform: 'translateX(-50%)', zIndex: 2000, display: 'flex', flexDirection: 'column' as const, gap: '8px', alignItems: 'center', pointerEvents: 'none' },
+  toast: { padding: '8px 16px', borderRadius: '30px', fontSize: '13px', fontWeight: 'bold', boxShadow: '0 4px 12px rgba(0,0,0,0.4)', backdropFilter: 'blur(4px)', animation: 'slideDown 0.3s ease' },
+  toastSuccess: { background: 'rgba(0,200,100,0.9)', color: '#fff' },
+  toastError: { background: 'rgba(255,50,50,0.9)', color: '#fff' },
+  toastInfo: { background: 'rgba(50,150,255,0.9)', color: '#fff' },
+  achievementsList: { display: 'flex', flexDirection: 'column' as const, gap: '8px', maxHeight: '300px', overflowY: 'auto' as const },
+  achievementItem: { display: 'flex', gap: '10px', alignItems: 'center', background: 'rgba(30,35,45,0.7)', padding: '8px', borderRadius: '8px' },
+  achievementIcon: { fontSize: '24px' },
+  achievementInfo: { flex: 1 },
+  achievementTitle: { fontSize: '14px', fontWeight: 'bold', color: '#ffcc00' },
+  achievementDesc: { fontSize: '10px', color: '#aaa' },
+  achievementReward: { fontSize: '10px', color: '#0f0', marginLeft: '4px' },
 };
 
 // Global animations
@@ -1373,6 +1639,10 @@ styleSheet.textContent = `
   from { opacity: 0; transform: translateY(-50px); }
   to { opacity: 1; transform: translateY(0); }
 }
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 @keyframes pulse {
   0% { box-shadow: 0 0 0 0 rgba(255,204,0,0.7); }
   70% { box-shadow: 0 0 0 20px rgba(255,204,0,0); }
@@ -1381,6 +1651,15 @@ styleSheet.textContent = `
 @keyframes fadeOut {
   from { opacity: 1; }
   to { opacity: 0; }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+@keyframes flash {
+  0%, 100% { background-color: rgba(255,204,0,0); }
+  50% { background-color: rgba(255,204,0,0.3); }
 }`;
 document.head.appendChild(styleSheet);
 
